@@ -14,15 +14,23 @@ from rich.prompt import Prompt
 
 from scry.tmuxcmd import TmuxFmtCmd, tmux_attach, tmux_create_detached
 
-# import readline
+DEBUG = True
 
-logging.basicConfig(
-    format="%(asctime)s %(levelname)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    level=logging.INFO,
-)
-
+# Configure logging to only write to file
 _LOGGER = logging.getLogger("")
+_LOGGER.setLevel(logging.INFO)
+
+# Remove any existing handlers (like the default console handler)
+for handler in _LOGGER.handlers[:]:
+    _LOGGER.removeHandler(handler)
+
+if DEBUG:
+    # Add file handler for /tmp/scry.log
+    file_handler = logging.FileHandler("/tmp/scry.log")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
+    file_handler.setLevel(logging.DEBUG)
+    _LOGGER.addHandler(file_handler)
+    _LOGGER.info("\n\n")
 
 OPTION_HELP = {
     "##": "Session ID (numerical)",
@@ -33,19 +41,30 @@ OPTION_HELP = {
     "?": "Help",
 }
 
-
 SESSION_HISTORY: deque = deque()
-DEBUG = False
-
 
 config = {
     "minnamelen": 15,
-    "n_cols": 5,
+    "n_cols": 4,
     "fmt_overhead": 6,
 }
 
 
 def do_table_loop():
+    """Main interactive loop for the scry tmux session manager.
+
+    This function provides an interactive interface for managing tmux sessions.
+    It displays a table of available sessions and handles user commands for:
+    - Attaching to sessions
+    - Creating new sessions
+    - Swapping between recent sessions
+    - Updating the display
+    - Showing help information
+    - Quitting the application
+
+    The function maintains a history of recently accessed sessions and provides
+    visual indicators for the current and recently used sessions.
+    """
     console = Console()
     display_error_message = ""
 
@@ -169,11 +188,20 @@ def format_session_name(name: str, maxlen: int) -> str:
 
     # Our name is too long. Trim some chars in the middle and replace with '*'
     startchars = maxlen // 2
-    new_name = name[:startchars] + "*" + name[-(maxlen - startchars - 1):]
+    new_name = name[:startchars] + "*" + name[-(maxlen - startchars - 1) :]
     return new_name
 
 
 def validate_session_name(s: str) -> bool:
+    """Validate if a string is a valid tmux session name.
+
+    Args:
+        s: The string to validate as a potential tmux session name.
+
+    Returns:
+        bool: True if the string is a valid session name (contains only word characters),
+            False otherwise.
+    """
     session_name_regex = r"^[\w+]+$"
     if re.match(session_name_regex, s):
         return True
@@ -182,6 +210,16 @@ def validate_session_name(s: str) -> bool:
 
 
 def draw_table(console: Console, sessions: List[Dict[str, str]]) -> int:
+    """Draw a formatted table of tmux sessions to the console.
+
+    Args:
+        console: Rich Console object to write the table to.
+        sessions: List of dictionaries containing tmux session information.
+            Each dictionary should contain 'session_id' and 'session_name' keys.
+
+    Returns:
+        int: Number of lines printed to the console.
+    """
     lines_printed = 0
 
     console.clear()
@@ -189,17 +227,12 @@ def draw_table(console: Console, sessions: List[Dict[str, str]]) -> int:
     console.line()
     lines_printed += 2
 
-    if DEBUG:
-        console.print(console.size)
-        console.print(f"Deque: {SESSION_HISTORY}")
-        console.print("")
-        lines_printed += 3
-
     if len(sessions) == 0:
         return lines_printed
 
     n_cols, column_width = get_column_width()
     items_per_col = (len(sessions) + n_cols - 1) // n_cols
+    _LOGGER.info(f"n_cols: {n_cols}, column_width: {column_width}, items_per_col: {items_per_col}")
 
     session_strings = format_session_strings(column_width, sessions)
 
@@ -221,6 +254,20 @@ def draw_table(console: Console, sessions: List[Dict[str, str]]) -> int:
 
 
 def format_session_strings(column_width: int, sessions: List[Dict[str, str]]) -> List[str]:
+    """Format tmux sessions into display strings with proper formatting and highlighting.
+
+    Args:
+        column_width: Width of each column in characters.
+        sessions: List of dictionaries containing tmux session information.
+            Each dictionary should contain 'session_id', 'session_name', and 'session_attached' keys.
+
+    Returns:
+        List[str]: List of formatted strings, each representing a session with proper
+            formatting, highlighting, and padding based on the session's state and history.
+
+    Raises:
+        RuntimeError: If there are more than 1000 sessions.
+    """
     session_strings: List[str] = []
 
     # How many characters do we need for the index numbers?
@@ -266,18 +313,34 @@ def format_session_strings(column_width: int, sessions: List[Dict[str, str]]) ->
 
         # The name we use in the display may not be the actual session name, but instead may be
         # a shortened version, returned from format_session_name()
-        session_fmt_name = format_session_name(session["session_name"], config["minnamelen"])
+        # session_fmt_name = format_session_name(session["session_name"], config["minnamelen"])
+        session_fmt_name = format_session_name(session["session_name"], column_width - fmt_overhead)
 
         session_string += session_fmt_name
+
+        _LOGGER.debug(f"pre-format session_string:  {session_string}, len: {len(session_string)}")
 
         session_string += " " + "-" * (column_width - len(session_fmt_name) - fmt_overhead)
         session_string += f'[{session["session_id"]:<{session_id_len}}] '
         session_strings.append(session_string)
 
+        _LOGGER.debug(f"post-format session_string: {session_string}, len: {len(session_string)}")
+
     return session_strings
 
 
 def get_column_width() -> Tuple[int, int]:
+    """Calculate the number of columns and width of each column for the session display.
+
+    This function determines the optimal number of columns and their width based on
+    the terminal size and minimum required width for session display. It will reduce
+    the number of columns if necessary to ensure each column has sufficient width.
+
+    Returns:
+        Tuple[int, int]: A tuple containing:
+            - Number of columns to use for display
+            - Width of each column in characters
+    """
     # A relatively dirty hack to figure out how many columns we can display
     terminal_size = get_terminal_size()
     n_cols = config["n_cols"] + 1
@@ -292,6 +355,16 @@ def get_column_width() -> Tuple[int, int]:
 
 
 def tmux_list_sessions() -> List[Dict[str, str]]:
+    """Get a list of all tmux sessions sorted by session name.
+
+    Returns:
+        List[Dict[str, str]]: List of dictionaries containing tmux session information.
+            Each dictionary contains 'session_id', 'session_name', and 'session_attached' keys.
+            Returns an empty list if no tmux server is running.
+
+    Raises:
+        RuntimeError: If tmux command fails for any reason other than no server running.
+    """
     try:
         tmux_cmd = TmuxFmtCmd(["list-sessions"], ["session_id", "session_name", "session_attached"])
     except RuntimeError as e:
