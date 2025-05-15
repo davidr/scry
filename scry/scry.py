@@ -14,14 +14,9 @@ from rich.prompt import Prompt
 
 from scry.tmuxcmd import (
     tmux_attach_window,
-    tmux_create_detached_session,
     tmux_create_detached_window,
-    tmux_window_exists,
-    tmux_list_sessions,
     tmux_list_windows,
 )
-
-# import readline
 
 DEBUG = True
 

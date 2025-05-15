@@ -47,7 +47,7 @@ class TmuxCmd(object):
         self._cmd_executed = True
 
     @property
-    def stdout(self) -> List[str]:
+    def stdout(self) -> List:
         if self._cmd_executed:
             stdout = self._cmd.stdout.decode("utf-8")
             return stdout.splitlines()
@@ -166,7 +166,7 @@ def tmux_attach_window(window_id: str, session_group: str):
 
     if session_to_attach is None:
         # No unattached sessions found. Create a new one.
-        session_to_attach = tmux_create_detached(session_group)
+        session_to_attach = tmux_create_detached_session(session_group)
 
     subprocess.run([tmux_binary, "attach-session", "-t", ":".join([session_to_attach, window_id])])
 
