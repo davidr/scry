@@ -1,4 +1,25 @@
 #!/usr/bin/env python3
+"""Interactive tmux window manager with session grouping support.
+
+This module provides a terminal user interface for managing tmux windows and sessions.
+It allows users to view, create, and switch between tmux windows within a session group,
+maintaining a history of recently accessed windows for quick navigation.
+
+Features:
+    - Interactive window listing with multi-column display
+    - Window creation and attachment
+    - Session group management
+    - History-based window switching
+    - Visual indicators for active and recently used windows
+    - Configurable display parameters
+
+Example:
+    To start the tmux window manager:
+        $ python -m scry
+
+Todo:
+    * Add support for window renaming
+"""
 
 import logging
 import re
@@ -33,7 +54,6 @@ if DEBUG:
     # Add file handler for /tmp/scry.log
     file_handler = logging.FileHandler("/tmp/scry.log")
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(filename)s %(levelname)s: %(message)s"))
-    file_handler.setLevel(logging.INFO)
     _LOGGER.addHandler(file_handler)
 
 OPTION_HELP = {
@@ -51,7 +71,7 @@ WINDOW_HISTORY: deque = deque()
 config = {
     "minnamelen": 15,
     "n_cols": 4,
-    "fmt_overhead": 6,
+    "fmt_overhead": 3,
     "session_group": "main",
 }
 
@@ -186,7 +206,7 @@ def process_command(
         for cmd, help_string in OPTION_HELP.items():
             console.print(f"\t\t{cmd}\t{help_string}")
         console.line(2)
-        _ = console.input("\[Enter to continue]")
+        _ = console.input("[Enter to continue]")
         return None, ""
 
     elif command == "u":
@@ -216,7 +236,7 @@ def do_table_loop():
     while True:
         _LOGGER.debug("Starting loop")
         windows = tmux_list_windows(config["session_group"])
-        _LOGGER.info(f"windows: {windows}")
+        _LOGGER.info("windows: %s", windows)
 
         # Ensure session group exists if we have no windows
         if len(windows) == 0 and not ensure_session_group_exists(config["session_group"]):
@@ -257,6 +277,9 @@ def format_session_name(name: str, maxlen: int) -> str:
     Returns:
         str: formatted sessions name
 
+    Todo:
+        * Only elide letters, not numbers, on the basis that numbers are more important
+
     """
     if len(name) <= maxlen:
         return name
@@ -280,52 +303,8 @@ def validate_window_name(s: str) -> bool:
     window_name_regex = r"^[\w+-.]+$"
     if re.match(window_name_regex, s):
         return True
-    else:
-        return False
 
-
-def draw_table(console: Console, sessions: List[Dict[str, str]]) -> int:
-    """Draw a formatted table of tmux sessions to the console.
-
-    Args:
-        console: Rich Console object to write the table to.
-        sessions: List of dictionaries containing tmux session information.
-            Each dictionary should contain 'session_id' and 'session_name' keys.
-
-    Returns:
-        int: Number of lines printed to the console.
-    """
-    lines_printed = 0
-
-    console.clear()
-    console.rule(f"[bold]scry {len(sessions)}")
-    console.line()
-    lines_printed += 2
-
-    if len(sessions) == 0:
-        return lines_printed
-
-    n_cols, column_width = get_column_width()
-    items_per_col = (len(sessions) + n_cols - 1) // n_cols
-    _LOGGER.info(f"n_cols: {n_cols}, column_width: {column_width}, items_per_col: {items_per_col}")
-
-    session_strings = format_session_strings(column_width, sessions)
-
-    for i in range(items_per_col):
-        for j in range(n_cols):
-            index = j * items_per_col + i
-
-            # Does this index exist, or have we run out of sessions before filling the last
-            # row?
-            if index >= len(session_strings):
-                break
-            console.print(session_strings[index], end="")
-
-        # print the newline since we're at the end of a row
-        console.print("")
-        lines_printed += 1
-
-    return lines_printed
+    return False
 
 
 def draw_table_windows(console: Console, windows: List[Dict[str, str]]) -> int:
@@ -333,8 +312,8 @@ def draw_table_windows(console: Console, windows: List[Dict[str, str]]) -> int:
 
     Args:
         console: Rich Console object to write the table to.
-        sessions: List of dictionaries containing tmux session information.
-            Each dictionary should contain 'session_id' and 'session_name' keys.
+        windows: List of dictionaries containing tmux window information.
+            Each dictionary should contain 'window_id' and 'window_name' keys.
 
     Returns:
         int: Number of lines printed to the console.
@@ -351,7 +330,7 @@ def draw_table_windows(console: Console, windows: List[Dict[str, str]]) -> int:
 
     n_cols, column_width = get_column_width()
     items_per_col = (len(windows) + n_cols - 1) // n_cols
-    _LOGGER.info(f"n_cols: {n_cols}, column_width: {column_width}, items_per_col: {items_per_col}")
+    _LOGGER.info("n_cols: %s, column_width: %s, items_per_col: %s", n_cols, column_width, items_per_col)
 
     window_strings = format_window_strings(column_width, windows)
 
@@ -363,6 +342,7 @@ def draw_table_windows(console: Console, windows: List[Dict[str, str]]) -> int:
             # row?
             if index >= len(window_strings):
                 break
+            _LOGGER.debug("i: %s, j: %s, index: %s", i, j, index)
             console.print(window_strings[index], end="")
 
         # print the newline since we're at the end of a row
@@ -370,82 +350,6 @@ def draw_table_windows(console: Console, windows: List[Dict[str, str]]) -> int:
         lines_printed += 1
 
     return lines_printed
-
-
-def format_session_strings(column_width: int, sessions: List[Dict[str, str]]) -> List[str]:
-    """Format tmux sessions into display strings with proper formatting and highlighting.
-
-    Args:
-        column_width: Width of each column in characters.
-        sessions: List of dictionaries containing tmux session information.
-            Each dictionary should contain 'session_id', 'session_name', and 'session_attached' keys.
-
-    Returns:
-        List[str]: List of formatted strings, each representing a session with proper
-            formatting, highlighting, and padding based on the session's state and history.
-
-    Raises:
-        RuntimeError: If there are more than 1000 sessions.
-    """
-    session_strings: List[str] = []
-
-    # How many characters do we need for the index numbers?
-    n_sessions = len(sessions)
-    if n_sessions > 1000:
-        # srsly?
-        raise RuntimeError(f"you have {n_sessions} sessions, which is too many")
-    elif n_sessions > 100:
-        idx_len = 3
-    elif n_sessions > 10:
-        idx_len = 2
-    else:
-        idx_len = 1
-
-    # Get the max number of chars required to display all session ids
-    session_id_len = max(len(x["session_id"]) for x in sessions)
-
-    fmt_overhead = config["fmt_overhead"]
-    fmt_overhead += idx_len + session_id_len
-
-    for i, session in enumerate(sessions):
-        session_string = ""
-
-        if len(WINDOW_HISTORY) > 0:
-            # We have at least one session in our history, the most recent. Highlight it
-            if session["session_id"] == WINDOW_HISTORY[-1]:
-                session_string = "[bold reverse magenta]"
-
-        if len(WINDOW_HISTORY) > 1:
-            if session["session_id"] == WINDOW_HISTORY[-2]:
-                session_string = "[bold italic green]"
-
-        if len(WINDOW_HISTORY) > 2:
-            if session["session_id"] == WINDOW_HISTORY[-3]:
-                session_string = "[bold italic blue]"
-
-        session_string += f"{i:>{idx_len}d})"
-        # If the session is attached anywhere, we want to put a hash in the list next to the name
-        if session["session_attached"] == "1":
-            session_string += "[bold italic]#"
-        else:
-            session_string += " "
-
-        # The name we use in the display may not be the actual session name, but instead may be
-        # a shortened version, returned from format_session_name()
-        # session_fmt_name = format_session_name(session["session_name"], config["minnamelen"])
-        session_fmt_name = format_session_name(session["session_name"], column_width - fmt_overhead)
-
-        session_string += session_fmt_name
-
-        _LOGGER.debug(f"pre-format session_string:  {session_string}, len: {len(session_string)}")
-
-        session_string += " " + "-" * (column_width - len(session_fmt_name) - fmt_overhead)
-        session_string += f'[{session["session_id"].replace('@', '$'):<{session_id_len}}] '
-        session_strings.append(session_string)
-
-        _LOGGER.debug(f"post-format session_string: {session_string}, len: {len(session_string)}")
-
-    return session_strings
 
 
 def format_window_strings(column_width: int, windows: List[Dict[str, str]]) -> List[str]:
@@ -477,11 +381,7 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]]) -> L
     else:
         idx_len = 1
 
-    # Get the max number of chars required to display all session ids
-    window_id_len = max(len(x["window_id"]) for x in windows)
-
     fmt_overhead = config["fmt_overhead"]
-    # fmt_overhead += idx_len + window_id_len
     fmt_overhead += idx_len
 
     for i, window in enumerate(windows):
@@ -511,10 +411,8 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]]) -> L
         # a shortened version, returned from format_window_name()
         # window_fmt_name = format_window_name(window["window_name"], config["minnamelen"])
         window_fmt_name = format_session_name(window["window_name"], column_width - fmt_overhead)
-
         window_string += window_fmt_name
-
-        _LOGGER.debug(f"pre-format window_string:  {window_string}, len: {len(window_string)}")
+        _LOGGER.debug("pre-format window_string:  <<%s>>, len: %s", window_string, len(window_string))
 
         window_string += " " + "-" * (column_width - len(window_fmt_name) - fmt_overhead) + " "
 
@@ -522,8 +420,7 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]]) -> L
         # window_id_str = window["window_id"].replace('@', '$')
         # window_string += f'[{window_id_str:<{window_id_len}}] '
         window_strings.append(window_string)
-
-        _LOGGER.debug(f"post-format window_string: {window_string}, len: {len(window_string)}")
+        _LOGGER.debug("post-format window_string: <<%s>>, len: %s", window_string, len(window_string))
 
     return window_strings
 
@@ -542,12 +439,19 @@ def get_column_width() -> Tuple[int, int]:
     """
     # A relatively dirty hack to figure out how many columns we can display
     terminal_size = get_terminal_size()
+    _LOGGER.debug("terminal_size: %s", terminal_size)
     n_cols = config["n_cols"] + 1
     column_width: int = 0
 
     while column_width < (config["fmt_overhead"] + config["minnamelen"] + 3):
+        _LOGGER.debug(
+            "cwidth: %s < fmt_overhead: %s + minnamelen: %s + 3",
+            column_width,
+            config["fmt_overhead"],
+            config["minnamelen"],
+        )
         n_cols -= 1
-        column_width = (terminal_size.columns - n_cols + 1) // n_cols
-        _LOGGER.debug(f"shrinking n_cols to {n_cols}")
+        column_width = (terminal_size.columns - n_cols) // n_cols
+        _LOGGER.debug("shrinking n_cols to %s", n_cols)
 
     return n_cols, column_width
