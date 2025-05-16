@@ -115,22 +115,24 @@ def tmux_create_detached_window(window_name: str, session_group: str):
     subprocess.run([tmux_binary, "new-window", "-t", session_group, "-n", window_name, "-d"])
 
 
-def tmux_create_detached_session(session_group: str) -> str:
+def tmux_create_detached_session(session_group: str, session_name: str = None) -> str:
     """Create a new detached session
 
-    We generate an 8-digit random number to use as the session name, check to make sure that it's not already in use,
-    and then create the session.
+    If session_name is not provided, we generate an 8-digit random number to use as the session name, check to make
+    sure that it's not already in use, and then create the session.
 
     Args:
-        session_group: The group of the session to create.
+        session_group: The name of the session group in which to create the session.
+        session_name (optional): The name of the session to create.
 
     Returns:
         str: The name of the newly created session.
     """
-    # session_name: str = str(random.randint(10000000, 99999999))
-    session_name: str = "49725296"
-    while tmux_session_exists(session_name):
+
+    if session_name is None:
         session_name = str(random.randint(10000000, 99999999))
+        while tmux_session_exists(session_name):
+            session_name = str(random.randint(10000000, 99999999))
 
     subprocess.run([tmux_binary, "new-session", "-s", session_name, "-d", "-t", session_group])
     return session_name
