@@ -22,6 +22,8 @@ Todo:
 """
 
 import logging
+import argparse
+import os
 import re
 import sys
 from collections import deque
@@ -29,6 +31,7 @@ from shutil import get_terminal_size
 from time import sleep
 from typing import Dict, List, Tuple
 
+import yaml
 from rich.console import Console
 from rich.prompt import Prompt
 
@@ -41,6 +44,14 @@ from scry.tmuxcmd import (
 )
 
 DEBUG = True
+
+# Default configuration values
+default_config = {
+    "minnamelen": 15,
+    "n_cols": 4,
+    "fmt_overhead": 3,
+    "session_group": "main",
+}
 
 # Configure logging to only write to file
 _LOGGER = logging.getLogger("")
@@ -65,15 +76,49 @@ OPTION_HELP = {
     "?": "Help",
 }
 
-SESSION_HISTORY: deque = deque()
 WINDOW_HISTORY: deque = deque()
 
-config = {
-    "minnamelen": 15,
-    "n_cols": 4,
-    "fmt_overhead": 3,
-    "session_group": "main",
-}
+# Load configuration
+config = default_config.copy()
+
+# Load configuration from file
+config_file_path = os.path.join(os.path.expanduser("~"), ".scry.yml")
+if os.path.exists(config_file_path):
+    with open(config_file_path, "r", encoding="utf-8") as f:
+        file_config = yaml.safe_load(f)
+        if file_config:
+            config.update(file_config)
+
+# Load configuration from command-line arguments
+parser = argparse.ArgumentParser(description="Interactive tmux window manager.")
+parser.add_argument(
+    "--minnamelen",
+    "-m",
+    type=int,
+    help="Minimum length for displayed window names.",
+)
+parser.add_argument(
+    "--columns",
+    "-c",
+    type=int,
+    help="Number of columns to display windows in.",
+)
+parser.add_argument(
+    "--session_group",
+    "-s",
+    type=str,
+    help="Session group to manage.",
+)
+
+args = parser.parse_args()
+
+# Update config with command-line arguments (highest priority)
+if args.minnamelen is not None:
+    config["minnamelen"] = args.minnamelen
+if args.columns is not None:
+    config["n_cols"] = args.columns
+if args.session_group is not None:
+    config["session_group"] = args.session_group
 
 
 def update_window_history(window_to_attach: str) -> None:
