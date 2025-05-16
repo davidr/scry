@@ -230,7 +230,7 @@ def do_table_loop():
     The function maintains a history of recently accessed windows and provides
     visual indicators for the current and recently used windows.
     """
-    console = Console()
+    console = Console(highlight=False)
     display_error_message = ""
 
     while True:
@@ -267,26 +267,26 @@ def do_table_loop():
             tmux_attach_window(window_to_attach, config["session_group"])
 
 
-def format_session_name(name: str, maxlen: int) -> str:
-    """Format the tmux session_name, removing middle chars if it is too long
+def format_window_name(window_name: str, maxlen: int) -> str:
+    """Format the tmux window_name, removing middle chars if it is too long
 
     Args:
-        name: session name
+        window_name: window name
         maxlen: maximum size of string to return
 
     Returns:
-        str: formatted sessions name
+        str: formatted window name
 
     Todo:
         * Only elide letters, not numbers, on the basis that numbers are more important
 
     """
-    if len(name) <= maxlen:
-        return name
+    if len(window_name) <= maxlen:
+        return window_name
 
     # Our name is too long. Trim some chars in the middle and replace with '*'
     startchars = maxlen // 2
-    new_name = name[:startchars] + "*" + name[-(maxlen - startchars - 1) :]
+    new_name = window_name[:startchars] + "*" + window_name[-(maxlen - startchars - 1) :]
     return new_name
 
 
@@ -400,7 +400,7 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]]) -> L
             if window["window_id"] == WINDOW_HISTORY[-3]:
                 window_string = "[bold italic blue]"
 
-        window_string += f"{i:>{idx_len}d})"
+        window_string += f"[b]{i:>{idx_len}d})[/b]"
         # If the window is attached anywhere, we want to put a hash in the list next to the name
         if window["window_active_clients"] != "0":
             window_string += "[bold italic]#"
@@ -409,16 +409,12 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]]) -> L
 
         # The name we use in the display may not be the actual window name, but instead may be
         # a shortened version, returned from format_window_name()
-        # window_fmt_name = format_window_name(window["window_name"], config["minnamelen"])
-        window_fmt_name = format_session_name(window["window_name"], column_width - fmt_overhead)
+        window_fmt_name = format_window_name(window["window_name"], column_width - fmt_overhead)
         window_string += window_fmt_name
         _LOGGER.debug("pre-format window_string:  <<%s>>, len: %s", window_string, len(window_string))
 
         window_string += " " + "-" * (column_width - len(window_fmt_name) - fmt_overhead) + " "
 
-        # Replace the @ with $ in the window id to make it
-        # window_id_str = window["window_id"].replace('@', '$')
-        # window_string += f'[{window_id_str:<{window_id_len}}] '
         window_strings.append(window_string)
         _LOGGER.debug("post-format window_string: <<%s>>, len: %s", window_string, len(window_string))
 
