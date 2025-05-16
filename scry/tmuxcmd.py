@@ -92,12 +92,15 @@ class TmuxFmtCmd(TmuxCmd):
             raise ValueError("tmux command did not execute correctly; no stdout.")
 
 
-def tmux_create_detached_window(window_name: str, session_group: str) -> str:
+def tmux_create_detached_window(window_name: str, session_group: str):
     """Create a new detached window
 
     Args:
         window_name: The name of the window to create.
         session_group: The group of the session to create the window in.
+
+    Raises:
+        RuntimeError: If the session group does not exist or the window already exists.
     """
 
     # Check that session group exists
