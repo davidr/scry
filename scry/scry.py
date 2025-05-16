@@ -15,6 +15,8 @@ from rich.prompt import Prompt
 from scry.tmuxcmd import (
     tmux_attach_window,
     tmux_create_detached_window,
+    tmux_create_detached_session,
+    tmux_list_sessions,
     tmux_list_windows,
 )
 
@@ -31,10 +33,9 @@ for handler in _LOGGER.handlers[:]:
 if DEBUG:
     # Add file handler for /tmp/scry.log
     file_handler = logging.FileHandler("/tmp/scry.log")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(filename)s %(levelname)s: %(message)s"))
+    file_handler.setLevel(logging.INFO)
     _LOGGER.addHandler(file_handler)
-    _LOGGER.info("\n\n")
 
 OPTION_HELP = {
     "##": "Session ID (numerical)",
@@ -75,11 +76,21 @@ def do_table_loop():
     display_error_message = ""
 
     while True:
+        _LOGGER.debug("Starting loop")
         # Clear some loop variables
         window_to_attach: str = None
 
         windows = tmux_list_windows(config["session_group"])
         _LOGGER.info(f"windows: {windows}")
+
+        # If windows is an empty list, we need to check if the main session group's session exists. If not, we need to create it.
+        if len(windows) == 0:
+            sessions = tmux_list_sessions()
+
+            # Do we have a session with the same name as our session group?
+            if not any(session["session_name"] == config["session_group"] for session in sessions):
+                tmux_create_detached_session(config["session_group"], session_name=config["session_group"])
+                continue
 
         # Check to see if our previous window still exits. If not, we'll need to remove it from the history
         if len(WINDOW_HISTORY) > 0:
