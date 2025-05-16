@@ -8,7 +8,6 @@ from shutil import get_terminal_size
 from time import sleep
 from typing import Dict, List, Tuple
 
-from rich import print
 from rich.console import Console
 from rich.prompt import Prompt
 
@@ -57,6 +56,145 @@ config = {
 }
 
 
+def update_window_history(window_to_attach: str) -> None:
+    """Update the window history with a new window to attach.
+
+    This function manages the window history deque, ensuring proper ordering and
+    preventing duplicates when a new window is about to be attached.
+
+    Args:
+        window_to_attach: The window ID that is about to be attached.
+    """
+    if len(WINDOW_HISTORY) == 0:
+        WINDOW_HISTORY.append(window_to_attach)
+    elif window_to_attach != WINDOW_HISTORY[-1]:
+        # If we have it somewhere else in the history, just remove it
+        if window_to_attach in WINDOW_HISTORY:
+            WINDOW_HISTORY.remove(window_to_attach)
+        WINDOW_HISTORY.append(window_to_attach)
+
+
+def process_new_window_command(command: str, session_group: str) -> Tuple[str, str]:
+    """Process the new window command.
+
+    Args:
+        command: The command string starting with 'n' followed by the window name.
+        session_group: The session group to create the window in.
+
+    Returns:
+        Tuple[str, str]: A tuple containing (window_to_attach, error_message).
+            If there's an error, window_to_attach will be None.
+    """
+    window_name = command.split()[1]
+
+    if not validate_window_name(window_name):
+        return None, "Invalid window name!"
+
+    try:
+        tmux_create_detached_window(window_name, session_group)
+    except RuntimeError as e:
+        if "bad window name" in str(e):
+            return None, "Invalid tmux window name"
+        return None, str(e)
+
+    windows = tmux_list_windows(session_group)
+    window_to_attach = next(
+        (window["window_id"] for window in windows if window["window_name"] == window_name),
+        None,
+    )
+    return window_to_attach, ""
+
+
+def setup_display(console: Console, windows: List[Dict[str, str]], error_message: str) -> None:
+    """Set up the display for the tmux window list.
+
+    Args:
+        console: The Rich console object to write to.
+        windows: List of window information dictionaries.
+        error_message: Error message to display, if any.
+    """
+    console.clear()
+    lines_printed = draw_table_windows(console, windows)
+    console.line(console.size.height - lines_printed - 2)
+
+    if error_message:
+        console.print(f"Error: {error_message}")
+        sleep(0.75)
+    else:
+        console.line()
+
+
+def ensure_session_group_exists(session_group: str) -> bool:
+    """Ensure the session group exists, creating it if necessary.
+
+    Args:
+        session_group: The name of the session group to check/create.
+
+    Returns:
+        bool: True if the session group exists or was created, False if creation failed.
+    """
+    sessions = tmux_list_sessions()
+    if not any(session["session_name"] == session_group for session in sessions):
+        try:
+            tmux_create_detached_session(session_group, session_name=session_group)
+            return False
+        except RuntimeError:
+            # TODO - something more graceful here
+            return False
+    return True
+
+
+def process_command(
+    command: str, windows: List[Dict[str, str]], session_group: str, console: Console
+) -> Tuple[str, str]:
+    """Process a user command and determine the appropriate action.
+
+    Args:
+        command: The command string entered by the user.
+        windows: List of current windows.
+        session_group: The session group being managed.
+        console: The Rich console object for displaying help information.
+
+    Returns:
+        Tuple[str, str]: A tuple containing (window_to_attach, error_message).
+            If there's no window to attach, window_to_attach will be None.
+    """
+    if command == "":
+        if len(WINDOW_HISTORY) > 0:
+            return WINDOW_HISTORY[-1], ""
+        return None, ""
+
+    elif command == "s":
+        if len(WINDOW_HISTORY) > 1:
+            return WINDOW_HISTORY[-2], ""
+        return None, ""
+
+    elif command.startswith("n"):
+        return process_new_window_command(command, session_group)
+
+    elif command.isdecimal():
+        window_idx = int(command)
+        try:
+            return windows[window_idx]["window_id"], ""
+        except IndexError:
+            return None, "Invalid index"
+
+    elif command == "q":
+        sys.exit(0)
+
+    elif command == "?":
+        for cmd, help_string in OPTION_HELP.items():
+            console.print(f"\t\t{cmd}\t{help_string}")
+        console.line(2)
+        _ = console.input("\[Enter to continue]")
+        return None, ""
+
+    elif command == "u":
+        return None, ""
+
+    return None, f'command "{command}" not recognized'
+
+
 def do_table_loop():
     """Main interactive loop for the scry tmux session manager.
 
@@ -77,22 +215,15 @@ def do_table_loop():
 
     while True:
         _LOGGER.debug("Starting loop")
-        # Clear some loop variables
-        window_to_attach: str = None
-
         windows = tmux_list_windows(config["session_group"])
         _LOGGER.info(f"windows: {windows}")
 
-        # If windows is an empty list, we need to check if the main session group's session exists. If not, we need to create it.
-        if len(windows) == 0:
-            sessions = tmux_list_sessions()
+        # Ensure session group exists if we have no windows
+        if len(windows) == 0 and not ensure_session_group_exists(config["session_group"]):
+            display_error_message = "Did not find session group, attempted to create it"
+            continue
 
-            # Do we have a session with the same name as our session group?
-            if not any(session["session_name"] == config["session_group"] for session in sessions):
-                tmux_create_detached_session(config["session_group"], session_name=config["session_group"])
-                continue
-
-        # Check to see if our previous window still exits. If not, we'll need to remove it from the history
+        # Clean up history if needed
         if len(WINDOW_HISTORY) > 0:
             previous_window = WINDOW_HISTORY[-1]
             if not next(
@@ -101,93 +232,19 @@ def do_table_loop():
             ):
                 WINDOW_HISTORY.pop()
 
-        console.clear()
-        lines_printed = draw_table_windows(console, windows)
-        console.line(console.size.height - lines_printed - 2)
+        # Display current state
+        setup_display(console, windows, display_error_message)
+        display_error_message = ""
 
-        if display_error_message:
-            console.print(f"Error: {display_error_message}")
-            display_error_message = ""
-        else:
-            console.line()
-
+        # Get and process command
         short_options = "/".join(OPTION_HELP.keys())
         command = Prompt.ask(f"Attach [bold magenta]\[{short_options}][/]")
 
-        if command == "":
-            # If we have a window history, just attach the most recent one. If not, noop.
-            if len(WINDOW_HISTORY) > 0:
-                tmux_attach_window(WINDOW_HISTORY[-1], config["session_group"])
-            else:
-                continue
-
-        elif command == "s":
-            if len(WINDOW_HISTORY) > 1:
-                window_to_attach = WINDOW_HISTORY[-2]
-            else:
-                continue
-
-        elif command.startswith("n"):
-            window_name = command.split()[1]
-
-            if not validate_window_name(window_name):
-                _print_err("Invalid window name!")
-                continue
-
-            try:
-                tmux_create_detached_window(window_name, config["session_group"])
-            except RuntimeError as e:
-                if "bad window name" in str(e):
-                    display_error_message = "Invalid tmux window name"
-                    continue
-
-            windows = tmux_list_windows(config["session_group"])
-            window_to_attach = next(
-                (window["window_id"] for window in windows if window["window_name"] == window_name),
-                None,
-            )
-
-        elif command.isdecimal():
-            # We know we have an index number. Find the window and attach it
-            window_idx = int(command)
-
-            try:
-                window_to_attach = windows[window_idx]["window_id"]
-            except IndexError:
-                display_error_message = "Invalid index"
-                continue
-
-        elif command == "q":
-            sys.exit(0)
-
-        elif command == "?":
-            for cmd, help in OPTION_HELP.items():
-                console.print(f"\t\t{cmd}\t{help}")
-            console.line(2)
-            _ = console.input("\[Enter to continue]")
-
-        elif command == "u":
-            continue
-
-        else:
-            display_error_message = f'command "{command}" not recognized'
+        window_to_attach, display_error_message = process_command(command, windows, config["session_group"], console)
 
         if window_to_attach:
-            # If we're just reattaching the same one we were just in, don't alter the history
-            if len(WINDOW_HISTORY) == 0:
-                WINDOW_HISTORY.append(window_to_attach)
-            elif window_to_attach != WINDOW_HISTORY[-1]:
-                # If we have it somewhere else in the history, just remove it.
-                if window_to_attach in WINDOW_HISTORY:
-                    WINDOW_HISTORY.remove(window_to_attach)
-                WINDOW_HISTORY.append(window_to_attach)
-
+            update_window_history(window_to_attach)
             tmux_attach_window(window_to_attach, config["session_group"])
-
-
-def _print_err(err: str) -> None:
-    print(f"Error: {err}")
-    sleep(0.5)
 
 
 def format_session_name(name: str, maxlen: int) -> str:
