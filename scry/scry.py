@@ -53,6 +53,7 @@ default_config = {
     "session_group": "main",
     "debug": False,  # Default to disabled debug logging
     "log_file": "/tmp/scry.log",  # Default log file path
+    "dump_file": os.path.join(os.path.expanduser("~"), ".scry_windows.yml"),  # Default dump file path
 }
 
 OPTION_HELP = {
@@ -61,6 +62,8 @@ OPTION_HELP = {
     "q": "Quit",
     "s": "Swap (attach second most recent session)",
     "u": "Update screen",
+    "d": "Dump list of active windows",
+    "l": "Load windows from dump file",
     "?": "Help",
 }
 
@@ -109,6 +112,11 @@ parser.add_argument(
     type=str,
     help="Path to the log file.",
 )
+parser.add_argument(
+    "--dump-file",
+    type=str,
+    help="Path to the window dump file.",
+)
 
 args = parser.parse_args()
 
@@ -123,6 +131,8 @@ if args.debug:
     config["debug"] = True
 if args.log_file is not None:
     config["log_file"] = args.log_file
+if args.dump_file is not None:
+    config["dump_file"] = args.dump_file
 
 # Configure logging based on the final config
 _LOGGER = logging.getLogger("")
@@ -281,7 +291,67 @@ def process_command(
     elif command == "u":
         return None, ""
 
+    elif command == "d":
+        dump_windows_to_yaml(windows, config["dump_file"])
+        return None, "Window list dumped to YAML."
+
+    elif command == "l":
+        load_windows_from_yaml(config["dump_file"], config["session_group"])
+        return None, "Windows loaded from YAML."
+
     return None, f'command "{command}" not recognized'
+
+
+def dump_windows_to_yaml(windows: List[Dict[str, str]], file_path: str) -> None:
+    """Dumps the list of windows to a YAML file.
+
+    Args:
+        windows: List of dictionaries containing tmux window information.
+        file_path: The path to the YAML file.
+    """
+    try:
+        window_names = [window["window_name"] for window in windows]
+        with open(file_path, "w", encoding="utf-8") as f:
+            yaml.dump({"active_windows": window_names}, f, default_flow_style=False)
+        _LOGGER.info("Window names dumped to %s", file_path)
+    except IOError as e:
+        _LOGGER.error("Error writing to dump file %s: %s", file_path, e)
+
+
+def load_windows_from_yaml(file_path: str, session_group: str) -> None:
+    """Loads window names from a YAML file and creates windows if they don't exist.
+
+    Args:
+        file_path: The path to the YAML file.
+        session_group: The session group to create new windows in.
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+            if not data or "active_windows" not in data or not isinstance(data["active_windows"], list):
+                _LOGGER.error("Invalid or empty dump file: %s", file_path)
+                return
+
+            window_names_to_load = data["active_windows"]
+            current_windows = tmux_list_windows(session_group)
+            current_window_names = {window["window_name"] for window in current_windows}
+
+            for window_name in window_names_to_load:
+                if window_name not in current_window_names:
+                    _LOGGER.info("Creating missing window: %s", window_name)
+                    try:
+                        tmux_create_detached_window(window_name, session_group)
+                    except RuntimeError as e:
+                        _LOGGER.error("Error creating window %s: %s", window_name, e)
+                else:
+                    _LOGGER.info("Window %s already exists, skipping.", window_name)
+
+    except FileNotFoundError:
+        _LOGGER.error("Dump file not found: %s", file_path)
+    except yaml.YAMLError as e:
+        _LOGGER.error("Error parsing dump file %s: %s", file_path, e)
+    except IOError as e:
+        _LOGGER.error("Error reading dump file %s: %s", file_path, e)
 
 
 def do_table_loop():
@@ -443,7 +513,8 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]]) -> L
     if n_windows > 1000:
         # srsly?
         raise RuntimeError(f"you have {n_windows} windows, which is too many")
-    elif n_windows > 100:
+
+    if n_windows > 100:
         idx_len = 3
     elif n_windows > 10:
         idx_len = 2
@@ -482,7 +553,7 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]]) -> L
         window_string += window_fmt_name
         _LOGGER.debug("pre-format window_string:  <<%s>>, len: %s", window_string, len(window_string))
 
-        window_string += " " + "-" * (column_width - len(window_fmt_name) - fmt_overhead) + " "
+        window_string += " " + "." * (column_width - len(window_fmt_name) - fmt_overhead) + " "
 
         window_strings.append(window_string)
         _LOGGER.debug("post-format window_string: <<%s>>, len: %s", window_string, len(window_string))
