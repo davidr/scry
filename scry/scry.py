@@ -69,90 +69,110 @@ OPTION_HELP = {
 
 WINDOW_HISTORY: deque = deque()
 
-# Load configuration
-config = default_config.copy()
-
-# Load configuration from file
-config_file_path = os.path.join(os.path.expanduser("~"), ".scry.yml")
-if os.path.exists(config_file_path):
-    with open(config_file_path, "r", encoding="utf-8") as f:
-        file_config = yaml.safe_load(f)
-        if file_config:
-            config.update(file_config)
-
-# Load configuration from command-line arguments
-parser = argparse.ArgumentParser(description="Interactive tmux window manager.")
-parser.add_argument(
-    "--minnamelen",
-    "-m",
-    type=int,
-    help="Minimum length for displayed window names.",
-)
-parser.add_argument(
-    "--columns",
-    "-c",
-    type=int,
-    help="Number of columns to display windows in.",
-)
-parser.add_argument(
-    "--session_group",
-    "-s",
-    type=str,
-    help="Session group to manage.",
-)
-parser.add_argument(
-    "--debug",
-    "-d",
-    action="store_true",
-    help="Enable debug logging.",
-)
-parser.add_argument(
-    "--log-file",
-    "-l",
-    type=str,
-    help="Path to the log file.",
-)
-parser.add_argument(
-    "--dump-file",
-    type=str,
-    help="Path to the window dump file.",
-)
-
-args = parser.parse_args()
-
-# Update config with command-line arguments (highest priority)
-if args.minnamelen is not None:
-    config["minnamelen"] = args.minnamelen
-if args.columns is not None:
-    config["n_cols"] = args.columns
-if args.session_group is not None:
-    config["session_group"] = args.session_group
-if args.debug:
-    config["debug"] = True
-if args.log_file is not None:
-    config["log_file"] = args.log_file
-if args.dump_file is not None:
-    config["dump_file"] = args.dump_file
-
-# Configure logging based on the final config
+# Configure logger
 _LOGGER = logging.getLogger("")
 
-# Remove any existing handlers (like the default console handler)
-for handler in _LOGGER.handlers[:]:
-    _LOGGER.removeHandler(handler)
 
-if config["debug"]:
-    _LOGGER.setLevel(logging.DEBUG)
-    # Add file handler
-    file_handler = logging.FileHandler(config["log_file"])
-    file_handler.setFormatter(logging.Formatter("%(asctime)s %(filename)s %(levelname)s: %(message)s"))
-    _LOGGER.addHandler(file_handler)
-else:
-    _LOGGER.setLevel(logging.ERROR)
-    # Add a handler to stderr for errors when debug is off
-    error_handler = logging.StreamHandler(sys.stderr)
-    error_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
-    _LOGGER.addHandler(error_handler)
+def parse_args_and_configure() -> Dict:
+    """Parse command line arguments and load configuration.
+
+    This function handles the complete configuration loading process:
+    1. Start with default configuration
+    2. Update with values from config file if it exists
+    3. Override with command line arguments
+    4. Configure logging based on final settings
+
+    Returns:
+        Dict: The complete configuration dictionary
+    """
+    # Start with default configuration
+    config = default_config.copy()
+
+    # Load configuration from file
+    config_file_path = os.path.join(os.path.expanduser("~"), ".scry.yml")
+    if os.path.exists(config_file_path):
+        with open(config_file_path, "r", encoding="utf-8") as f:
+            file_config = yaml.safe_load(f)
+            if file_config:
+                config.update(file_config)
+
+    # Load configuration from command-line arguments
+    parser = argparse.ArgumentParser(description="Interactive tmux window manager.")
+    parser.add_argument(
+        "--minnamelen",
+        "-m",
+        type=int,
+        help="Minimum length for displayed window names.",
+    )
+    parser.add_argument(
+        "--columns",
+        "-c",
+        type=int,
+        help="Number of columns to display windows in.",
+    )
+    parser.add_argument(
+        "--session_group",
+        "-s",
+        type=str,
+        help="Session group to manage.",
+    )
+    parser.add_argument(
+        "--debug",
+        "-d",
+        action="store_true",
+        help="Enable debug logging.",
+    )
+    parser.add_argument(
+        "--log-file",
+        "-l",
+        type=str,
+        help="Path to the log file.",
+    )
+    parser.add_argument(
+        "--dump-file",
+        type=str,
+        help="Path to the window dump file.",
+    )
+
+    args = parser.parse_args()
+
+    # Update config with command-line arguments (highest priority)
+    if args.minnamelen is not None:
+        config["minnamelen"] = args.minnamelen
+    if args.columns is not None:
+        config["n_cols"] = args.columns
+    if args.session_group is not None:
+        config["session_group"] = args.session_group
+    if args.debug:
+        config["debug"] = True
+    if args.log_file is not None:
+        config["log_file"] = args.log_file
+    if args.dump_file is not None:
+        config["dump_file"] = args.dump_file
+
+    # Configure logging based on the final config
+    # Remove any existing handlers (like the default console handler)
+    for handler in _LOGGER.handlers[:]:
+        _LOGGER.removeHandler(handler)
+
+    if config["debug"]:
+        _LOGGER.setLevel(logging.DEBUG)
+        # Add file handler
+        file_handler = logging.FileHandler(config["log_file"])
+        file_handler.setFormatter(logging.Formatter("%(asctime)s %(filename)s %(levelname)s: %(message)s"))
+        _LOGGER.addHandler(file_handler)
+    else:
+        _LOGGER.setLevel(logging.ERROR)
+        # Add a handler to stderr for errors when debug is off
+        error_handler = logging.StreamHandler(sys.stderr)
+        error_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+        _LOGGER.addHandler(error_handler)
+
+    return config
+
+
+# Load configuration
+config = parse_args_and_configure()
 
 
 def update_window_history(window_to_attach: str) -> None:
