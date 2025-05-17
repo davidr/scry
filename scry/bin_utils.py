@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import logging
+import os
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -18,12 +19,11 @@ def find_bin_in_path(binary_name: str) -> str:
         ValueError: the binary is not found in the path
 
     """
-    import os
 
     for path in os.environ["PATH"].split(os.pathsep):
         bin_full_path = os.path.join(path, binary_name)
         if os.access(bin_full_path, os.X_OK):
-            _LOGGER.debug(f"found tmux: {bin_full_path}")
+            _LOGGER.debug("found tmux: %s", bin_full_path)
             return bin_full_path
 
     raise ValueError(f"{binary_name} not found in PATH")
