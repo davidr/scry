@@ -45,29 +45,15 @@ from scry.tmuxcmd import (
     tmux_list_windows,
 )
 
-DEBUG = True
-
 # Default configuration values
 default_config = {
     "minnamelen": 15,
     "n_cols": 4,
     "fmt_overhead": 3,
     "session_group": "main",
+    "debug": False,  # Default to disabled debug logging
+    "log_file": "/tmp/scry.log",  # Default log file path
 }
-
-# Configure logging to only write to file
-_LOGGER = logging.getLogger("")
-_LOGGER.setLevel(logging.DEBUG)
-
-# Remove any existing handlers (like the default console handler)
-for handler in _LOGGER.handlers[:]:
-    _LOGGER.removeHandler(handler)
-
-if DEBUG:
-    # Add file handler for /tmp/scry.log
-    file_handler = logging.FileHandler("/tmp/scry.log")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s %(filename)s %(levelname)s: %(message)s"))
-    _LOGGER.addHandler(file_handler)
 
 OPTION_HELP = {
     "##": "Session ID (numerical)",
@@ -111,6 +97,18 @@ parser.add_argument(
     type=str,
     help="Session group to manage.",
 )
+parser.add_argument(
+    "--debug",
+    "-d",
+    action="store_true",
+    help="Enable debug logging.",
+)
+parser.add_argument(
+    "--log-file",
+    "-l",
+    type=str,
+    help="Path to the log file.",
+)
 
 args = parser.parse_args()
 
@@ -121,6 +119,30 @@ if args.columns is not None:
     config["n_cols"] = args.columns
 if args.session_group is not None:
     config["session_group"] = args.session_group
+if args.debug:
+    config["debug"] = True
+if args.log_file is not None:
+    config["log_file"] = args.log_file
+
+# Configure logging based on the final config
+_LOGGER = logging.getLogger("")
+
+# Remove any existing handlers (like the default console handler)
+for handler in _LOGGER.handlers[:]:
+    _LOGGER.removeHandler(handler)
+
+if config["debug"]:
+    _LOGGER.setLevel(logging.DEBUG)
+    # Add file handler
+    file_handler = logging.FileHandler(config["log_file"])
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(filename)s %(levelname)s: %(message)s"))
+    _LOGGER.addHandler(file_handler)
+else:
+    _LOGGER.setLevel(logging.ERROR)
+    # Add a handler to stderr for errors when debug is off
+    error_handler = logging.StreamHandler(sys.stderr)
+    error_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    _LOGGER.addHandler(error_handler)
 
 
 def update_window_history(window_to_attach: str) -> None:
