@@ -19,6 +19,8 @@ Example:
 
 Todo:
     * Add support for window renaming
+    * change dir to $HOME before creating a new window
+    * Possibly set some environment variables in the new window
 """
 
 import logging

@@ -5,6 +5,7 @@ import logging
 import random
 import subprocess
 from typing import Dict, List
+from pathlib import Path
 
 from scry.bin_utils import find_bin_in_path
 
@@ -12,7 +13,7 @@ tmux_binary = find_bin_in_path("tmux")
 """ str: fully qualified path of tmux binary
 """
 
-_TMUX_FORMAT_SEPARATOR = "__SEPARATOR__"
+_TMUX_FORMAT_SEPARATOR = "__X__"
 """ str: Format separator to use for tmux -F format constructions
 """
 
@@ -20,24 +21,58 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class TmuxCmd(object):
+    """Base class for executing tmux commands and handling their output.
+
+    This class provides the foundation for executing tmux commands and processing their
+    output. It handles the execution of arbitrary tmux commands, manages the working
+    directory context, and provides access to command output.
+
+    The class ensures proper error handling for tmux command execution and provides
+    a standardized way to access command output through the stdout property.
+
+    Attributes:
+        _tmux_bin: Path to the tmux binary.
+        _tmux_args: List of arguments to pass to tmux.
+        _cmd_executed: Boolean indicating if the command has been executed.
+        _cmd: CompletedProcess object containing the results of the command execution.
+        _cwd: Path object representing the working directory for command execution.
+
+    Example:
+        >>> cmd = TmuxCmd(["list-sessions"])
+        >>> print(cmd.stdout)
+        ['session1', 'session2']
+
+    Raises:
+        RuntimeError: If the tmux command returns a non-zero exit code.
+        ValueError: If attempting to access stdout before command execution.
+    """
+
     def __init__(self, cmd_args: List[str]):
-        """
+        """Initialize a new TmuxCmd instance.
 
         Args:
-            cmd_args: arguments to pass to tmux binary
+            cmd_args: List of arguments to pass to the tmux binary.
         """
 
         self._tmux_bin = tmux_binary
         self._tmux_args = cmd_args
         self._cmd_executed: bool = False
         self._cmd: subprocess.CompletedProcess = None
+        self._cwd: Path = Path.home()
 
         self._execute_cmd()
 
     def _execute_cmd(self) -> None:
-        cmd = subprocess.run([self._tmux_bin] + self._tmux_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        cmd = subprocess.run(
+            [self._tmux_bin] + self._tmux_args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=self._cwd,
+            check=False,
+        )
 
-        _LOGGER.debug(f"{cmd.stdout}")
+        _LOGGER.debug("executing %s", " ".join([self._tmux_bin] + self._tmux_args))
+        _LOGGER.debug("stdout %s", cmd.stdout)
 
         if cmd.returncode != 0:
             raise RuntimeError(f"tmux returned nonzero with stderr: {cmd.stderr}")
@@ -48,12 +83,17 @@ class TmuxCmd(object):
 
     @property
     def stdout(self) -> List:
+        """
+        Get the stdout of the tmux command.
+
+        Returns:
+            List[str]: The stdout of the tmux command.
+        """
         if self._cmd_executed:
             stdout = self._cmd.stdout.decode("utf-8")
             return stdout.splitlines()
 
-        else:
-            raise ValueError("tmux command did not execute correctly; no stdout.")
+        raise ValueError("tmux command did not execute correctly; no stdout.")
 
 
 class TmuxFmtCmd(TmuxCmd):
@@ -81,15 +121,14 @@ class TmuxFmtCmd(TmuxCmd):
 
             stdout = self._cmd.stdout.decode("utf-8")
             for line in stdout.splitlines():
-                _LOGGER.debug(f"line: {line}")
+                _LOGGER.debug("line: %s", line)
                 line_vals = line.split(sep=_TMUX_FORMAT_SEPARATOR)
 
                 # Create a dict using the fmt_keys as the keys
                 _ret.append(dict(zip(self._fmt_keys, line_vals)))
             return _ret
 
-        else:
-            raise ValueError("tmux command did not execute correctly; no stdout.")
+        raise ValueError("tmux command did not execute correctly; no stdout.")
 
 
 def tmux_create_detached_window(window_name: str, session_group: str):
@@ -112,7 +151,7 @@ def tmux_create_detached_window(window_name: str, session_group: str):
         raise RuntimeError(f"Window {window_name} already exists in session group {session_group}")
 
     # Create the window
-    subprocess.run([tmux_binary, "new-window", "-t", session_group, "-n", window_name, "-d"])
+    TmuxCmd(["new-window", "-t", session_group, "-n", window_name, "-d"])
 
 
 def tmux_create_detached_session(session_group: str, session_name: str = None) -> str:
@@ -134,12 +173,8 @@ def tmux_create_detached_session(session_group: str, session_name: str = None) -
         while tmux_session_exists(session_name):
             session_name = str(random.randint(10000000, 99999999))
 
-    subprocess.run([tmux_binary, "new-session", "-s", session_name, "-d", "-t", session_group])
+    TmuxCmd(["new-session", "-s", session_name, "-d", "-t", session_group])
     return session_name
-
-
-def tmux_attach(session_id: str):
-    subprocess.run([tmux_binary, "attach-session", "-t", session_id])
 
 
 def tmux_attach_window(window_id: str, session_group: str):
@@ -173,7 +208,7 @@ def tmux_attach_window(window_id: str, session_group: str):
         # No unattached sessions found. Create a new one.
         session_to_attach = tmux_create_detached_session(session_group)
 
-    subprocess.run([tmux_binary, "attach-session", "-t", ":".join([session_to_attach, window_id])])
+    TmuxCmd(["attach-session", "-t", ":".join([session_to_attach, window_id])])
 
 
 def tmux_list_windows(session_name: str) -> List[Dict[str, str]]:
