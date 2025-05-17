@@ -86,7 +86,7 @@ def parse_args_and_configure() -> Dict:
         Dict: The complete configuration dictionary
     """
     # Start with default configuration
-    config = default_config.copy()
+    cfg = default_config.copy()
 
     # Load configuration from file
     config_file_path = os.path.join(os.path.expanduser("~"), ".scry.yml")
@@ -94,7 +94,7 @@ def parse_args_and_configure() -> Dict:
         with open(config_file_path, "r", encoding="utf-8") as f:
             file_config = yaml.safe_load(f)
             if file_config:
-                config.update(file_config)
+                cfg.update(file_config)
 
     # Load configuration from command-line arguments
     parser = argparse.ArgumentParser(description="Interactive tmux window manager.")
@@ -138,27 +138,27 @@ def parse_args_and_configure() -> Dict:
 
     # Update config with command-line arguments (highest priority)
     if args.minnamelen is not None:
-        config["minnamelen"] = args.minnamelen
+        cfg["minnamelen"] = args.minnamelen
     if args.columns is not None:
-        config["n_cols"] = args.columns
+        cfg["n_cols"] = args.columns
     if args.session_group is not None:
-        config["session_group"] = args.session_group
+        cfg["session_group"] = args.session_group
     if args.debug:
-        config["debug"] = True
+        cfg["debug"] = True
     if args.log_file is not None:
-        config["log_file"] = args.log_file
+        cfg["log_file"] = args.log_file
     if args.dump_file is not None:
-        config["dump_file"] = args.dump_file
+        cfg["dump_file"] = args.dump_file
 
     # Configure logging based on the final config
     # Remove any existing handlers (like the default console handler)
     for handler in _LOGGER.handlers[:]:
         _LOGGER.removeHandler(handler)
 
-    if config["debug"]:
+    if cfg["debug"]:
         _LOGGER.setLevel(logging.DEBUG)
         # Add file handler
-        file_handler = logging.FileHandler(config["log_file"])
+        file_handler = logging.FileHandler(cfg["log_file"])
         file_handler.setFormatter(logging.Formatter("%(asctime)s %(filename)s %(levelname)s: %(message)s"))
         _LOGGER.addHandler(file_handler)
     else:
@@ -168,7 +168,7 @@ def parse_args_and_configure() -> Dict:
         error_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
         _LOGGER.addHandler(error_handler)
 
-    return config
+    return cfg
 
 
 # Load configuration
