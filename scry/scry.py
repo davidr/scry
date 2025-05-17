@@ -258,48 +258,51 @@ def process_command(
         Tuple[str, str]: A tuple containing (window_to_attach, error_message).
             If there's no window to attach, window_to_attach will be None.
     """
+    # Handle empty command
     if command == "":
-        if len(WINDOW_HISTORY) > 0:
-            return WINDOW_HISTORY[-1], ""
-        return None, ""
+        return (WINDOW_HISTORY[-1], "") if len(WINDOW_HISTORY) > 0 else (None, "")
 
-    elif command == "s":
-        if len(WINDOW_HISTORY) > 1:
-            return WINDOW_HISTORY[-2], ""
-        return None, ""
-
-    elif command.startswith("n"):
-        return process_new_window_command(command, session_group)
-
-    elif command.isdecimal():
-        window_idx = int(command)
+    # Handle numeric index
+    if command.isdecimal():
         try:
-            return windows[window_idx]["window_id"], ""
+            return windows[int(command)]["window_id"], ""
         except IndexError:
             return None, "Invalid index"
 
-    elif command == "q":
-        sys.exit(0)
+    # Handle new window command
+    if command.startswith("n "):
+        return process_new_window_command(command, session_group)
 
-    elif command == "?":
-        for cmd, help_string in OPTION_HELP.items():
-            console.print(f"\t\t{cmd}\t{help_string}")
-        console.line(2)
-        _ = console.input("[Enter to continue]")
-        return None, ""
+    # Command dispatch table
+    commands = {
+        "s": lambda: (WINDOW_HISTORY[-2], "") if len(WINDOW_HISTORY) > 1 else (None, ""),
+        "q": lambda: sys.exit(0),
+        "?": lambda: show_help(console),
+        "u": lambda: (None, ""),
+        "d": lambda: (None, dump_windows_to_yaml(windows, config["dump_file"]) or "Window list dumped to YAML."),
+        "l": lambda: (None, load_windows_from_yaml(config["dump_file"], session_group) or "Windows loaded from YAML."),
+    }
 
-    elif command == "u":
-        return None, ""
-
-    elif command == "d":
-        dump_windows_to_yaml(windows, config["dump_file"])
-        return None, "Window list dumped to YAML."
-
-    elif command == "l":
-        load_windows_from_yaml(config["dump_file"], config["session_group"])
-        return None, "Windows loaded from YAML."
+    if command in commands:
+        return commands[command]()
 
     return None, f'command "{command}" not recognized'
+
+
+def show_help(console: Console) -> Tuple[str, str]:
+    """Display help information.
+
+    Args:
+        console: The Rich console object for displaying help.
+
+    Returns:
+        Tuple[str, str]: Always returns (None, "") to match process_command return type.
+    """
+    for cmd, help_string in OPTION_HELP.items():
+        console.print(f"\t\t{cmd}\t{help_string}")
+    console.line(2)
+    _ = console.input("[Enter to continue]")
+    return None, ""
 
 
 def dump_windows_to_yaml(windows: List[Dict[str, str]], file_path: str) -> None:
