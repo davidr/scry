@@ -12,11 +12,13 @@ _bin_patch = patch("scry.bin_utils.find_bin_in_path", return_value="/usr/bin/tmu
 _argv_patch.start()
 _bin_patch.start()
 
-# Now it's safe to import scry modules
-from scry.scry import WINDOW_HISTORY, config  # noqa: E402
+_real_find_bin_in_path = _bin_patch.temp_original
 
+# Now it's safe to import scry modules
 import pytest  # noqa: E402
 from rich.console import Console  # noqa: E402
+
+from scry.scry import WINDOW_HISTORY, config  # noqa: E402
 
 
 @pytest.fixture
@@ -85,6 +87,12 @@ def scry_config():
     yield config
     config.clear()
     config.update(saved)
+
+
+@pytest.fixture
+def real_find_bin_in_path():
+    """Provide the real find_bin_in_path function (not the import-time mock)."""
+    return _real_find_bin_in_path
 
 
 @pytest.fixture
