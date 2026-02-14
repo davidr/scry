@@ -23,8 +23,8 @@ Todo:
     * Possibly set some environment variables in the new window
 """
 
-import logging
 import argparse
+import logging
 import os
 import re
 import sys
@@ -39,8 +39,8 @@ from rich.prompt import Prompt
 
 from scry.tmuxcmd import (
     tmux_attach_window,
-    tmux_create_detached_window,
     tmux_create_detached_session,
+    tmux_create_detached_window,
     tmux_list_sessions,
     tmux_list_windows,
 )

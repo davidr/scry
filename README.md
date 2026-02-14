@@ -19,24 +19,18 @@ An interactive tmux window manager with session grouping support, providing a us
 
 ### Prerequisites
 
-- Python 3.8+ (or the version specified in `pyproject.toml`)
+- Python 3.12+
 - tmux
 - [uv](https://github.com/astral-sh/uv) (Python package installer and resolver)
 
 ### Recommended Installation (Virtual Environment using uv)
 
-1.  **Create a virtual environment:**
+1.  **Install `scry` and its dependencies:**
     ```bash
-    uv venv
+    uv sync --no-dev
     source .venv/bin/activate  # On Linux/macOS
-    # .venv\Scripts\activate    # On Windows
     ```
-
-2.  **Install `scry`:**
-    ```bash
-    uv pip install .
-    ```
-    This will install `scry` and its dependencies into your virtual environment. The `scry` command will then be available.
+    This will create a virtual environment, install `scry` and its dependencies from the lock file. The `scry` command will then be available.
 
 ### Alternative: Using `shiv` (for a single executable)
 
@@ -116,28 +110,21 @@ dump_file: "~/.scry_windows.yml"
     cd scry
     ```
 
-2.  **Create and activate a virtual environment:**
+2.  **Set up the development environment:**
     ```bash
-    uv venv
+    uv sync
     source .venv/bin/activate
-    ```
-
-3.  **Install in editable mode:**
-    ```bash
-    uv pip install -e .
     ```
 
 ### Code Style
 
-The project uses:
-- Black for code formatting (`uv run black .`)
-- Ruff for linting and import sorting (`uv run ruff check . --fix` and `uv run ruff format .`)
-
-*Consider adding `black` and `ruff` to your `[project.optional-dependencies]` in `pyproject.toml` under a `dev` group.*
+The project uses Ruff for formatting, linting, and import sorting:
+- `uv run ruff format .`
+- `uv run ruff check . --fix`
 
 ### Project Structure
 
-- `scry/`
+- `src/scry/`
   - `__main__.py`: Entry point
   - `scry.py`: Core functionality
   - `tmuxcmd.py`: tmux command interface

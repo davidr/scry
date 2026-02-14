@@ -4,8 +4,8 @@
 import logging
 import random
 import subprocess
-from typing import Dict, List
 from pathlib import Path
+from typing import Dict, List
 
 from scry.bin_utils import find_bin_in_path
 
