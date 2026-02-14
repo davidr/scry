@@ -43,6 +43,8 @@ from scry.tmuxcmd import (
     tmux_create_detached_window,
     tmux_list_sessions,
     tmux_list_windows,
+    tmux_rename_window,
+    tmux_window_exists,
 )
 
 # Default configuration values
@@ -59,6 +61,7 @@ default_config = {
 OPTION_HELP = {
     "##": "Session ID (numerical)",
     "n": "New session (: n sess_name)",
+    "r": "Rename window (: r ## new_name)",
     "q": "Quit",
     "s": "Swap (attach second most recent session)",
     "u": "Update screen",
@@ -224,6 +227,45 @@ def process_new_window_command(command: str, session_group: str) -> Tuple[str, s
     return window_to_attach, ""
 
 
+def process_rename_window_command(command: str, windows: List[Dict[str, str]], session_group: str) -> Tuple[str, str]:
+    """Process the rename window command.
+
+    Args:
+        command: The command string in the form 'r <index> <new_name>'.
+        windows: List of current windows.
+        session_group: The session group the window belongs to.
+
+    Returns:
+        Tuple[str, str]: A tuple containing (window_to_attach, error_message).
+            window_to_attach is always None (rename doesn't attach).
+    """
+    parts = command.split()
+    if len(parts) != 3:
+        return None, "Usage: r <index> <new_name>"
+
+    index_str, new_name = parts[1], parts[2]
+
+    if not index_str.isdecimal():
+        return None, "Window index must be a number"
+
+    index = int(index_str)
+    if index < 0 or index >= len(windows):
+        return None, "Invalid index"
+
+    if not validate_window_name(new_name):
+        return None, "Invalid window name!"
+
+    if tmux_window_exists(new_name, session_group):
+        return None, f"Window '{new_name}' already exists"
+
+    try:
+        tmux_rename_window(windows[index]["window_id"], new_name, session_group)
+    except RuntimeError as e:
+        return None, str(e)
+
+    return None, ""
+
+
 def setup_display(console: Console, windows: List[Dict[str, str]], error_message: str) -> None:
     """Set up the display for the tmux window list.
 
@@ -292,6 +334,10 @@ def process_command(
     # Handle new window command
     if command.startswith("n "):
         return process_new_window_command(command, session_group)
+
+    # Handle rename window command
+    if command.startswith("r "):
+        return process_rename_window_command(command, windows, session_group)
 
     # Command dispatch table
     commands = {

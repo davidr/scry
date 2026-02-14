@@ -155,6 +155,20 @@ def tmux_create_detached_window(window_name: str, session_group: str):
     TmuxCmd(["new-window", "-t", session_group, "-n", window_name, "-d"])
 
 
+def tmux_rename_window(window_id: str, new_name: str, session_group: str):
+    """Rename a window in a session group.
+
+    Args:
+        window_id: The ID of the window to rename.
+        new_name: The new name for the window.
+        session_group: The session group the window belongs to.
+
+    Raises:
+        RuntimeError: If the tmux rename-window command fails.
+    """
+    TmuxCmd(["rename-window", "-t", f"{session_group}:{window_id}", new_name])
+
+
 def tmux_create_detached_session(session_group: str, session_name: str = None) -> str:
     """Create a new detached session
 
