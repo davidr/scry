@@ -75,6 +75,7 @@ class TmuxCmd(object):
         _LOGGER.debug("stdout %s", cmd.stdout)
 
         if cmd.returncode != 0:
+            _LOGGER.error("tmux returned nonzero with stderr: %s", cmd.stderr)
             raise RuntimeError(f"tmux returned nonzero with stderr: {cmd.stderr}")
 
         # Set the executed flag and save the CompletedProcess obj
@@ -226,7 +227,8 @@ def tmux_list_windows(session_name: str) -> List[Dict[str, str]]:
             ["list-windows", "-t", session_name], ["window_id", "window_name", "window_active_clients"]
         )
     except RuntimeError as e:
-        if "no server running" in str(e):
+        _LOGGER.error("tmux command failed: %s", str(e))
+        if "no server running" in str(e) or "error connecting to" in str(e):
             # This is okay. It just means there's no server yet. We return an empty session
             # list
             return []
@@ -248,7 +250,7 @@ def tmux_list_sessions() -> List[Dict[str, str]]:
     try:
         tmux_cmd = TmuxFmtCmd(["list-sessions"], ["session_id", "session_name", "session_attached", "session_group"])
     except RuntimeError as e:
-        if "no server running" in str(e):
+        if "no server running" in str(e) or "error connecting to" in str(e):
             # This is okay. It just means there's no server yet. We return an empty session
             # list
             return []

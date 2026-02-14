@@ -1,7 +1,27 @@
-[build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+[project]
+name = "scry"
+version = "0.0.1c" # Copied from setup.cfg
+description = "Interactive tmux window manager with session grouping support."
+authors = [
+    { name = "David Ressman", email = "davidr@ressman.org" },
+]
+license = { text = "BSD 3-Clause License" }
+readme = "README.md"
+requires-python = ">=3.8" # Assuming a reasonable modern Python version
+dependencies = [
+    "rich",
+    "PyYAML",
+]
 
+[project.scripts]
+scry = "scry.__main__:run_scry"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+# You can add uv-specific configurations here if needed in the future
 
 [tool.flake8]
 max-line-length = 120
