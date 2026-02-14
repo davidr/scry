@@ -540,7 +540,7 @@ def draw_table_windows(console: Console, windows: List[Dict[str, str]]) -> int:
     items_per_col = (len(windows) + n_cols - 1) // n_cols
     _LOGGER.info("n_cols: %s, column_width: %s, items_per_col: %s", n_cols, column_width, items_per_col)
 
-    window_strings = format_window_strings(column_width, windows)
+    window_strings = format_window_strings(column_width, windows, items_per_col)
 
     for i in range(items_per_col):
         for j in range(n_cols):
@@ -560,13 +560,14 @@ def draw_table_windows(console: Console, windows: List[Dict[str, str]]) -> int:
     return lines_printed
 
 
-def format_window_strings(column_width: int, windows: List[Dict[str, str]]) -> List[str]:
+def format_window_strings(column_width: int, windows: List[Dict[str, str]], items_per_col: int) -> List[str]:
     """Format tmux windows into display strings with proper formatting and highlighting.
 
     Args:
         column_width: Width of each column in characters.
         windows: List of dictionaries containing tmux window information.
             Each dictionary should contain 'window_id', 'window_name', and 'window_active_clients' keys.
+        items_per_col: Number of items per column in the display layout.
 
     Returns:
         List[str]: List of formatted strings, each representing a window with proper
@@ -576,6 +577,9 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]]) -> L
         RuntimeError: If there are more than 1000 windows.
     """
     window_strings: List[str] = []
+
+    # Pattern to match names like "foo+00" (prefix + 1-4 digits)
+    suffix_pattern = re.compile(r'^(.+?)(\+\d{1,4})$')
 
     # How many characters do we need for the index numbers?
     n_windows = len(windows)
@@ -616,9 +620,30 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]]) -> L
         else:
             window_string += " "
 
+        # Determine the display name, potentially collapsing common prefixes
+        display_name = window["window_name"]
+        row = i % items_per_col
+
+        # Check if this window is one of the 3 most recent (highlighted) windows
+        is_highlighted = window["window_id"] in list(WINDOW_HISTORY)[-3:]
+
+        # Only collapse if not at top of column AND not highlighted
+        if row != 0 and not is_highlighted:
+            match = suffix_pattern.match(window["window_name"])
+            if match:
+                prefix, suffix = match.groups()
+
+                # Check if previous window (same column, one row up) has same prefix
+                prev_window = windows[i - 1]
+                prev_match = suffix_pattern.match(prev_window["window_name"])
+
+                if prev_match and prev_match.group(1) == prefix:
+                    # Replace prefix with spaces (prefix + '+' sign)
+                    display_name = ' ' * (len(prefix) + 1) + suffix[1:]
+
         # The name we use in the display may not be the actual window name, but instead may be
         # a shortened version, returned from format_window_name()
-        window_fmt_name = format_window_name(window["window_name"], column_width - fmt_overhead)
+        window_fmt_name = format_window_name(display_name, column_width - fmt_overhead)
         window_string += window_fmt_name
         _LOGGER.debug("pre-format window_string:  <<%s>>, len: %s", window_string, len(window_string))
 
