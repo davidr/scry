@@ -12,6 +12,7 @@ Scry is an interactive tmux window manager with session grouping support. It pro
 uv sync                      # install project + dev dependencies
 source .venv/bin/activate
 scry                         # run the CLI
+uv run pytest -v             # run the test suite
 ```
 
 ## Code Style
@@ -42,4 +43,4 @@ Three-layer design:
 
 - **Session groups**: Uses tmux's session group feature. The "main" session group is the default. Numbered 8-digit sessions are auto-created for attachment.
 - **Config is global**: `parse_args_and_configure()` runs at import time of `scry.py`; the resulting `config` dict is used as module-level state throughout.
-- **No tests currently exist** — pytest infrastructure is set up but no test files are present.
+- **Testing**: 89 tests via pytest. Import-time side effects (`sys.argv` parsing, tmux binary lookup) are patched in `tests/conftest.py` before any scry module is imported. Run with `uv run pytest -v`.

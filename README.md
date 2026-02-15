@@ -88,6 +88,7 @@ dump_file: "~/.scry_windows.yml"
 
 - `##`: Select window by numerical index
 - `n <name>`: Create new window with specified name
+- `r ## <name>`: Rename window
 - `s`: Swap to second most recent window
 - `u`: Update screen
 - `d`: Dump list of active windows
@@ -116,6 +117,12 @@ dump_file: "~/.scry_windows.yml"
     source .venv/bin/activate
     ```
 
+### Running Tests
+
+```bash
+uv run pytest -v
+```
+
 ### Code Style
 
 The project uses Ruff for formatting, linting, and import sorting:
@@ -129,6 +136,7 @@ The project uses Ruff for formatting, linting, and import sorting:
   - `scry.py`: Core functionality
   - `tmuxcmd.py`: tmux command interface
   - `bin_utils.py`: Binary path utilities
+- `tests/`: Test suite (89 tests)
 - `pyproject.toml`: Project metadata and dependencies for `uv`.
 - `README.md`: This file.
 
