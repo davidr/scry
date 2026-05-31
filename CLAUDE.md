@@ -32,7 +32,7 @@ Three-layer design:
 2. **Core UI/logic** (`src/scry/scry.py`) — the main interactive loop and all display logic:
    - `do_table_loop()` — main REPL: list windows, prompt for command, dispatch, attach
    - `process_command()` — command dispatch, returns `(window_to_attach, error_message)` tuple
-   - `draw_table_windows()` / `format_window_strings()` — Rich-based multi-column display with history highlighting (magenta=most recent, green=2nd, blue=3rd)
+   - `draw_table_windows()` / `format_window_strings()` — Rich-based multi-column display with history highlighting (magenta=most recent, green=2nd, blue=3rd). Optionally collapses shared `prefix+NN` prefixes when `config["hide_prefixes"]` is set (off by default; `--hide-prefixes` flag / `hide_prefixes` config key)
    - `parse_args_and_configure()` — three-tier config: defaults → `~/.scry.yml` → CLI args. Called at **module load time** and stored in module-level `config` dict
    - `WINDOW_HISTORY` — module-level deque tracking recently attached windows
 
@@ -47,4 +47,4 @@ Three-layer design:
 
 - **Session groups**: Uses tmux's session group feature. The "main" session group is the default. Numbered 8-digit sessions are auto-created for attachment.
 - **Config is global**: `parse_args_and_configure()` runs at import time of `scry.py`; the resulting `config` dict is used as module-level state throughout.
-- **Testing**: 91 tests via pytest. Import-time side effects (`sys.argv` parsing, tmux binary lookup) are patched in `tests/conftest.py` before any scry module is imported. Run with `uv run pytest -v`.
+- **Testing**: 92 tests via pytest. Import-time side effects (`sys.argv` parsing, tmux binary lookup) are patched in `tests/conftest.py` before any scry module is imported. Run with `uv run pytest -v`.

@@ -77,6 +77,7 @@ def test_name_truncation(scry_config, clean_window_history):
 def test_prefix_collapsing(prefix_windows, scry_config, clean_window_history):
     """Consecutive same-prefix windows collapse prefix to spaces."""
     scry_config["fmt_overhead"] = 3
+    scry_config["hide_prefixes"] = True
     # With items_per_col = 5 (single column), all are in same column
     result = format_window_strings(40, prefix_windows, 5)
     # First window "proj+01" should show full name
@@ -90,6 +91,7 @@ def test_prefix_collapsing(prefix_windows, scry_config, clean_window_history):
 def test_no_collapse_at_column_top(prefix_windows, scry_config, clean_window_history):
     """Row 0 never collapses prefix."""
     scry_config["fmt_overhead"] = 3
+    scry_config["hide_prefixes"] = True
     # With items_per_col = 2, windows at index 0, 2, 4 are at row 0
     result = format_window_strings(40, prefix_windows, 2)
     # Index 0 is row 0 — always full name
@@ -101,8 +103,18 @@ def test_no_collapse_at_column_top(prefix_windows, scry_config, clean_window_his
 def test_no_collapse_when_highlighted(prefix_windows, scry_config, clean_window_history):
     """Highlighted windows don't collapse."""
     scry_config["fmt_overhead"] = 3
+    scry_config["hide_prefixes"] = True
     # Make the second prefix window highlighted (most recent in history)
     clean_window_history.append("@11")
     result = format_window_strings(40, prefix_windows, 5)
     # @11 is "proj+02" at index 1 — should NOT collapse because it's highlighted
+    assert "proj" in result[1]
+
+
+def test_no_collapse_when_hide_prefixes_disabled(prefix_windows, scry_config, clean_window_history):
+    """With hide_prefixes off, consecutive same-prefix names keep their full prefix."""
+    scry_config["fmt_overhead"] = 3
+    scry_config["hide_prefixes"] = False
+    result = format_window_strings(40, prefix_windows, 5)
+    # "proj+02" at index 1 would normally collapse, but the feature is off
     assert "proj" in result[1]

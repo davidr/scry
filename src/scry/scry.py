@@ -56,6 +56,7 @@ default_config = {
     "debug": False,  # Default to disabled debug logging
     "log_file": "/tmp/scry.log",  # Default log file path
     "dump_file": os.path.join(os.path.expanduser("~"), ".scry_windows.yml"),  # Default dump file path
+    "hide_prefixes": False,  # Collapse shared "prefix+NN" prefixes in the display
 }
 
 OPTION_HELP = {
@@ -136,6 +137,11 @@ def parse_args_and_configure() -> Dict:
         type=str,
         help="Path to the window dump file.",
     )
+    parser.add_argument(
+        "--hide-prefixes",
+        action="store_true",
+        help="Collapse shared 'prefix+NN' prefixes in the display.",
+    )
 
     args = parser.parse_args()
 
@@ -152,6 +158,8 @@ def parse_args_and_configure() -> Dict:
         cfg["log_file"] = args.log_file
     if args.dump_file is not None:
         cfg["dump_file"] = args.dump_file
+    if args.hide_prefixes:
+        cfg["hide_prefixes"] = True
 
     # Configure logging based on the final config
     # Remove any existing handlers (like the default console handler)
@@ -579,7 +587,7 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]], item
     window_strings: List[str] = []
 
     # Pattern to match names like "foo+00" (prefix + 1-4 digits)
-    suffix_pattern = re.compile(r'^(.+?)(\+\d{1,4})$')
+    suffix_pattern = re.compile(r"^(.+?)(\+\d{1,4})$")
 
     # How many characters do we need for the index numbers?
     n_windows = len(windows)
@@ -627,8 +635,8 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]], item
         # Check if this window is one of the 3 most recent (highlighted) windows
         is_highlighted = window["window_id"] in list(WINDOW_HISTORY)[-3:]
 
-        # Only collapse if not at top of column AND not highlighted
-        if row != 0 and not is_highlighted:
+        # Only collapse if enabled, not at top of column, AND not highlighted
+        if config["hide_prefixes"] and row != 0 and not is_highlighted:
             match = suffix_pattern.match(window["window_name"])
             if match:
                 prefix, suffix = match.groups()
@@ -639,7 +647,7 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]], item
 
                 if prev_match and prev_match.group(1) == prefix:
                     # Replace prefix with spaces (prefix + '+' sign)
-                    display_name = ' ' * (len(prefix) + 1) + suffix[1:]
+                    display_name = " " * (len(prefix) + 1) + suffix[1:]
 
         # The name we use in the display may not be the actual window name, but instead may be
         # a shortened version, returned from format_window_name()
