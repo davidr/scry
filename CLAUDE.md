@@ -13,7 +13,11 @@ uv sync                      # install project + dev dependencies
 source .venv/bin/activate
 scry                         # run the CLI
 uv run pytest -v             # run the test suite
+make install                 # uv tool install . — install scry as a uv tool on PATH
+make uninstall               # uv tool uninstall scry
 ```
+
+Distribution is via `uv tool install` (wrapped by the `Makefile`); the target machine needs only `uv`, which bootstraps its own Python and the locked dependencies. There is no shiv/zipapp build anymore.
 
 ## Code Style
 
