@@ -65,6 +65,7 @@ Scry can be configured through:
 - `-d, --debug`: Enable debug logging
 - `-l, --log-file`: Path to the log file
 - `--dump-file`: Path to the window dump file
+- `--hide-prefixes`: Collapse shared `prefix+NN` prefixes in the display (off by default)
 
 ### Configuration File
 
@@ -78,7 +79,12 @@ session_group: "main"
 debug: false
 log_file: "/tmp/scry.log"
 dump_file: "~/.scry_windows.yml"
+hide_prefixes: false
 ```
+
+When `hide_prefixes` is enabled, a window named like `proj+02` that sits directly
+below another `proj+NN` window in the same column has its shared prefix blanked
+out, so only the `+NN` portion shows. It is disabled by default.
 
 ## Usage
 
