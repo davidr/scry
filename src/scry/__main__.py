@@ -7,4 +7,5 @@ def run_scry():
     do_table_loop()
 
 
-run_scry()
+if __name__ == "__main__":
+    run_scry()

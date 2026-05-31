@@ -13,7 +13,11 @@ uv sync                      # install project + dev dependencies
 source .venv/bin/activate
 scry                         # run the CLI
 uv run pytest -v             # run the test suite
+make install                 # uv tool install . — install scry as a uv tool on PATH
+make uninstall               # uv tool uninstall scry
 ```
+
+Distribution is via `uv tool install` (wrapped by the `Makefile`); the target machine needs only `uv`, which bootstraps its own Python and the locked dependencies. There is no shiv/zipapp build anymore.
 
 ## Code Style
 
@@ -23,7 +27,7 @@ uv run pytest -v             # run the test suite
 
 Three-layer design:
 
-1. **Entry point** (`src/scry/__main__.py`) — minimal, calls `do_table_loop()` from the core module. Note: `run_scry()` is both defined and called at module level (the entry point in pyproject.toml also points to `run_scry`).
+1. **Entry point** (`src/scry/__main__.py`) — minimal: defines `run_scry()`, which calls `do_table_loop()` from the core module. The pyproject.toml console script points at `scry.__main__:run_scry`, and the module-level call is guarded by `if __name__ == "__main__":` so importing the module is side-effect free.
 
 2. **Core UI/logic** (`src/scry/scry.py`) — the main interactive loop and all display logic:
    - `do_table_loop()` — main REPL: list windows, prompt for command, dispatch, attach
@@ -43,4 +47,4 @@ Three-layer design:
 
 - **Session groups**: Uses tmux's session group feature. The "main" session group is the default. Numbered 8-digit sessions are auto-created for attachment.
 - **Config is global**: `parse_args_and_configure()` runs at import time of `scry.py`; the resulting `config` dict is used as module-level state throughout.
-- **Testing**: 89 tests via pytest. Import-time side effects (`sys.argv` parsing, tmux binary lookup) are patched in `tests/conftest.py` before any scry module is imported. Run with `uv run pytest -v`.
+- **Testing**: 91 tests via pytest. Import-time side effects (`sys.argv` parsing, tmux binary lookup) are patched in `tests/conftest.py` before any scry module is imported. Run with `uv run pytest -v`.
