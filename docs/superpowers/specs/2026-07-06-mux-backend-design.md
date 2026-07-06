@@ -116,6 +116,25 @@ README and CLAUDE.md are updated with: the `backend` config key and `--backend`/
 flag, the zellij version requirement (tested on 0.44.3), and the documented
 degradations under zellij (no `#` indicator, rename caveat, name-as-identity).
 
+## Spike results (2026-07-06)
+
+**Part A (headless, zero attached clients):**
+
+- Rename with zero clients: **FAILS SILENTLY** — `go-to-tab-name tab-one` and
+  `rename-tab tab-renamed` both exit 0, but `query-tab-names` still shows
+  `tab-one`; no tab was renamed. With no attached client there is no focused
+  tab, so `rename-tab` is a no-op that reports success.
+- Implication for `go-to-tab-name`: it also appears to be a client-focus
+  operation; with zero clients it likely no-ops too (cannot confirm headlessly
+  — Part B question 2/5 covers it).
+
+**Decision (Part A):** `rename_window` under zellij raises
+`RuntimeError("window rename is not supported with the zellij backend")` —
+a silent no-op masquerading as success is worse than a clear error.
+
+**Part B (two-client focus test):** _pending — results to be appended when the
+user runs the manual test._
+
 ## Out of scope
 
 - Per-tab attached-client detection under zellij (revisit if zellij grows the API).
