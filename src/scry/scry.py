@@ -37,15 +37,7 @@ import yaml
 from rich.console import Console
 from rich.prompt import Prompt
 
-from scry.tmuxcmd import (
-    tmux_attach_window,
-    tmux_create_detached_session,
-    tmux_create_detached_window,
-    tmux_list_sessions,
-    tmux_list_windows,
-    tmux_rename_window,
-    tmux_window_exists,
-)
+from scry.backends import get_backend
 
 # Default configuration values
 default_config = {
@@ -195,6 +187,13 @@ def parse_args_and_configure() -> Dict:
 # Load configuration
 config = parse_args_and_configure()
 
+# Instantiate the configured multiplexer backend (module-level, like config)
+try:
+    backend = get_backend(config)
+except ValueError as e:
+    _LOGGER.error("%s", e)
+    sys.exit(1)
+
 
 def update_window_history(window_to_attach: str) -> None:
     """Update the window history with a new window to attach.
@@ -231,13 +230,13 @@ def process_new_window_command(command: str, session_group: str) -> Tuple[str, s
         return None, "Invalid window name!"
 
     try:
-        tmux_create_detached_window(window_name, session_group)
+        backend.create_detached_window(window_name, session_group)
     except RuntimeError as e:
         if "bad window name" in str(e):
             return None, "Invalid tmux window name"
         return None, str(e)
 
-    windows = tmux_list_windows(session_group)
+    windows = backend.list_windows(session_group)
     window_to_attach = next(
         (window["window_id"] for window in windows if window["window_name"] == window_name),
         None,
@@ -273,11 +272,11 @@ def process_rename_window_command(command: str, windows: List[Dict[str, str]], s
     if not validate_window_name(new_name):
         return None, "Invalid window name!"
 
-    if tmux_window_exists(new_name, session_group):
+    if backend.window_exists(new_name, session_group):
         return None, f"Window '{new_name}' already exists"
 
     try:
-        tmux_rename_window(windows[index]["window_id"], new_name, session_group)
+        backend.rename_window(windows[index]["window_id"], new_name, session_group)
     except RuntimeError as e:
         return None, str(e)
 
@@ -312,10 +311,10 @@ def ensure_session_group_exists(session_group: str) -> bool:
     Returns:
         bool: True if the session group exists or was created, False if creation failed.
     """
-    sessions = tmux_list_sessions()
+    sessions = backend.list_sessions()
     if not any(session["session_name"] == session_group for session in sessions):
         try:
-            tmux_create_detached_session(session_group, session_name=session_group)
+            backend.ensure_session_group(session_group)
             return False
         except RuntimeError:
             # TODO - something more graceful here
@@ -420,14 +419,14 @@ def load_windows_from_yaml(file_path: str, session_group: str) -> None:
                 return
 
             window_names_to_load = data["active_windows"]
-            current_windows = tmux_list_windows(session_group)
+            current_windows = backend.list_windows(session_group)
             current_window_names = {window["window_name"] for window in current_windows}
 
             for window_name in window_names_to_load:
                 if window_name not in current_window_names:
                     _LOGGER.info("Creating missing window: %s", window_name)
                     try:
-                        tmux_create_detached_window(window_name, session_group)
+                        backend.create_detached_window(window_name, session_group)
                     except RuntimeError as e:
                         _LOGGER.error("Error creating window %s: %s", window_name, e)
                 else:
@@ -461,7 +460,7 @@ def do_table_loop():
 
     while True:
         _LOGGER.debug("Starting loop")
-        windows = tmux_list_windows(config["session_group"])
+        windows = backend.list_windows(config["session_group"])
         _LOGGER.info("windows: %s", windows)
 
         # Ensure session group exists if we have no windows
@@ -490,7 +489,7 @@ def do_table_loop():
 
         if window_to_attach:
             update_window_history(window_to_attach)
-            tmux_attach_window(window_to_attach, config["session_group"])
+            backend.attach_window(window_to_attach, config["session_group"])
 
 
 def format_window_name(window_name: str, maxlen: int) -> str:

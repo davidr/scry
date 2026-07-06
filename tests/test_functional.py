@@ -14,8 +14,8 @@ from scry.scry import (
 )
 
 
-@patch("scry.scry.tmux_list_windows")
-@patch("scry.scry.tmux_create_detached_window")
+@patch("scry.scry.backend.list_windows")
+@patch("scry.scry.backend.create_detached_window")
 def test_new_window_and_history(mock_create, mock_list, clean_window_history):
     """Create window via process_command, update history, verify history state."""
     mock_list.return_value = [{"window_id": "@10", "window_name": "fresh"}]
@@ -29,8 +29,8 @@ def test_new_window_and_history(mock_create, mock_list, clean_window_history):
     assert WINDOW_HISTORY[-1] == "@10"
 
 
-@patch("scry.scry.tmux_rename_window")
-@patch("scry.scry.tmux_window_exists", return_value=False)
+@patch("scry.scry.backend.rename_window")
+@patch("scry.scry.backend.window_exists", return_value=False)
 def test_rename_flow(mock_exists, mock_rename, mock_windows, clean_window_history):
     """Select window by index, rename it, verify correct tmux call."""
     console = MagicMock()
@@ -66,8 +66,8 @@ def test_numeric_selection(mock_windows, clean_window_history):
     assert err == ""
 
 
-@patch("scry.scry.tmux_create_detached_window")
-@patch("scry.scry.tmux_list_windows")
+@patch("scry.scry.backend.create_detached_window")
+@patch("scry.scry.backend.list_windows")
 def test_dump_and_load_roundtrip(mock_list, mock_create, tmp_path):
     """Dump windows to real temp file, load from same file, verify only missing windows created."""
     dump_file = str(tmp_path / "roundtrip.yml")

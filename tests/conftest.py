@@ -5,7 +5,8 @@ from unittest.mock import create_autospec, patch
 
 # Neutralize import-time side effects BEFORE any scry module is imported:
 # 1. sys.argv — prevents argparse from reading test runner args
-# 2. find_bin_in_path — prevents tmux binary lookup at import time
+# 2. find_bin_in_path — scry.scry instantiates the backend at import time,
+#    which resolves the multiplexer binary in the backend constructor
 
 _argv_patch = patch.object(sys, "argv", ["scry"])
 _bin_patch = patch("scry.bin_utils.find_bin_in_path", return_value="/usr/bin/tmux")

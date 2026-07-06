@@ -1,9 +1,9 @@
-"""Tests for pure functions in scry.scry and scry.tmuxcmd."""
+"""Tests for pure functions in scry.scry and scry.backends.tmux."""
 
 import pytest
 
+from scry.backends.tmux import TmuxFmtCmd
 from scry.scry import format_window_name, validate_window_name
-from scry.tmuxcmd import TmuxFmtCmd
 
 # --- format_window_name ---
 

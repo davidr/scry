@@ -91,8 +91,8 @@ def test_unrecognized(mock_windows, clean_window_history):
 # --- process_new_window_command() ---
 
 
-@patch("scry.scry.tmux_list_windows")
-@patch("scry.scry.tmux_create_detached_window")
+@patch("scry.scry.backend.list_windows")
+@patch("scry.scry.backend.create_detached_window")
 def test_new_window_success(mock_create, mock_list):
     """Creates window, returns window_id."""
     mock_list.return_value = [
@@ -115,7 +115,7 @@ def test_new_window_invalid_name():
     assert "Invalid" in err
 
 
-@patch("scry.scry.tmux_create_detached_window", side_effect=RuntimeError("tmux error"))
+@patch("scry.scry.backend.create_detached_window", side_effect=RuntimeError("tmux error"))
 def test_new_window_tmux_error(mock_create):
     """RuntimeError propagated as error string."""
     result, err = process_new_window_command("n validname", "main")
@@ -126,8 +126,8 @@ def test_new_window_tmux_error(mock_create):
 # --- process_rename_window_command() ---
 
 
-@patch("scry.scry.tmux_rename_window")
-@patch("scry.scry.tmux_window_exists", return_value=False)
+@patch("scry.scry.backend.rename_window")
+@patch("scry.scry.backend.window_exists", return_value=False)
 def test_rename_success(mock_exists, mock_rename, mock_windows):
     """Valid args -> rename called, returns (None, '')."""
     result, err = process_rename_window_command("r 0 newname", mock_windows, "main")
@@ -164,7 +164,7 @@ def test_rename_invalid_name(mock_windows):
     assert "Invalid" in err
 
 
-@patch("scry.scry.tmux_window_exists", return_value=True)
+@patch("scry.scry.backend.window_exists", return_value=True)
 def test_rename_duplicate_name(mock_exists, mock_windows):
     """Window already exists -> error."""
     result, err = process_rename_window_command("r 0 existing", mock_windows, "main")
@@ -175,15 +175,15 @@ def test_rename_duplicate_name(mock_exists, mock_windows):
 # --- ensure_session_group_exists() ---
 
 
-@patch("scry.scry.tmux_list_sessions")
+@patch("scry.scry.backend.list_sessions")
 def test_exists_already(mock_list):
     """Returns True when session found."""
     mock_list.return_value = [{"session_name": "main"}]
     assert ensure_session_group_exists("main") is True
 
 
-@patch("scry.scry.tmux_create_detached_session")
-@patch("scry.scry.tmux_list_sessions")
+@patch("scry.scry.backend.ensure_session_group")
+@patch("scry.scry.backend.list_sessions")
 def test_creates_new(mock_list, mock_create):
     """Creates session when not found."""
     mock_list.return_value = []
@@ -192,8 +192,8 @@ def test_creates_new(mock_list, mock_create):
     assert result is False  # Returns False after creation per source code
 
 
-@patch("scry.scry.tmux_create_detached_session", side_effect=RuntimeError("fail"))
-@patch("scry.scry.tmux_list_sessions")
+@patch("scry.scry.backend.ensure_session_group", side_effect=RuntimeError("fail"))
+@patch("scry.scry.backend.list_sessions")
 def test_create_fails(mock_list, mock_create):
     """Returns False on RuntimeError, no crash."""
     mock_list.return_value = []

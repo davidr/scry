@@ -28,8 +28,8 @@ def test_dump_io_error(tmp_path):
     dump_windows_to_yaml(windows, bad_path)
 
 
-@patch("scry.scry.tmux_create_detached_window")
-@patch("scry.scry.tmux_list_windows")
+@patch("scry.scry.backend.create_detached_window")
+@patch("scry.scry.backend.list_windows")
 def test_load_creates_missing_windows(mock_list, mock_create, tmp_path):
     """Windows in file but not in tmux get created."""
     dump_file = tmp_path / "windows.yml"
@@ -40,8 +40,8 @@ def test_load_creates_missing_windows(mock_list, mock_create, tmp_path):
     mock_create.assert_called_once_with("beta", "main")
 
 
-@patch("scry.scry.tmux_create_detached_window")
-@patch("scry.scry.tmux_list_windows")
+@patch("scry.scry.backend.create_detached_window")
+@patch("scry.scry.backend.list_windows")
 def test_load_skips_existing(mock_list, mock_create, tmp_path):
     """Windows already present are not re-created."""
     dump_file = tmp_path / "windows.yml"
