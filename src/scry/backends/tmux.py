@@ -18,6 +18,10 @@ _NO_SERVER_MARKERS = ("no server running", "error connecting to")
 """ tuple: stderr fragments that mean "no tmux server yet", not a real error
 """
 
+_NO_WINDOWS_MARKERS = _NO_SERVER_MARKERS + ("can't find session",)
+""" tuple: additionally, list-windows targeting a session group that does not exist yet
+"""
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -138,7 +142,7 @@ class TmuxBackend(MuxBackend):
             )
         except RuntimeError as e:
             _LOGGER.error("tmux command failed: %s", str(e))
-            if any(marker in str(e) for marker in _NO_SERVER_MARKERS):
+            if any(marker in str(e) for marker in _NO_WINDOWS_MARKERS):
                 # This is okay. It just means there's no server yet.
                 return []
             raise

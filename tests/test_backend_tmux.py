@@ -84,6 +84,13 @@ def test_list_windows_no_server(mock_fmt, backend):
 
 
 @patch("scry.backends.tmux.TmuxFmtCmd")
+def test_list_windows_missing_session_returns_empty(mock_fmt, backend):
+    """Server running but session group absent: 'can't find session' returns []."""
+    mock_fmt.side_effect = RuntimeError('tmux returned nonzero with stderr: b"can\'t find session: main"')
+    assert backend.list_windows("main") == []
+
+
+@patch("scry.backends.tmux.TmuxFmtCmd")
 def test_list_windows_reraises_other_errors(mock_fmt, backend):
     """RuntimeErrors that aren't 'no server' propagate instead of UnboundLocalError."""
     mock_fmt.side_effect = RuntimeError("tmux returned nonzero with stderr: b'permission denied'")
