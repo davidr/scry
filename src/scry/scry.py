@@ -57,6 +57,7 @@ default_config = {
     "log_file": "/tmp/scry.log",  # Default log file path
     "dump_file": os.path.join(os.path.expanduser("~"), ".scry_windows.yml"),  # Default dump file path
     "hide_prefixes": False,  # Collapse shared "prefix+NN" prefixes in the display
+    "backend": "tmux",  # Terminal multiplexer backend: "tmux" or "zellij"
 }
 
 OPTION_HELP = {
@@ -142,6 +143,13 @@ def parse_args_and_configure() -> Dict:
         action="store_true",
         help="Collapse shared 'prefix+NN' prefixes in the display.",
     )
+    parser.add_argument(
+        "--backend",
+        "-b",
+        type=str,
+        choices=["tmux", "zellij"],
+        help="Terminal multiplexer backend to use.",
+    )
 
     args = parser.parse_args()
 
@@ -160,6 +168,8 @@ def parse_args_and_configure() -> Dict:
         cfg["dump_file"] = args.dump_file
     if args.hide_prefixes:
         cfg["hide_prefixes"] = True
+    if args.backend is not None:
+        cfg["backend"] = args.backend
 
     # Configure logging based on the final config
     # Remove any existing handlers (like the default console handler)

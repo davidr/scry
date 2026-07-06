@@ -1,2 +1,34 @@
 # -*- coding: utf-8 -*-
-"""Multiplexer backend implementations."""
+"""Multiplexer backend implementations and the factory that selects one."""
+
+from typing import Dict
+
+from scry.backends.base import MuxBackend
+
+
+def get_backend(cfg: Dict) -> MuxBackend:
+    """Instantiate the multiplexer backend named by cfg["backend"].
+
+    Args:
+        cfg: The scry config dict; the "backend" key selects the backend
+            (missing key defaults to tmux).
+
+    Returns:
+        MuxBackend: The instantiated backend.
+
+    Raises:
+        ValueError: Unknown backend name, or the backend's binary is not in
+            PATH (raised by find_bin_in_path in the backend constructor).
+    """
+    backend_name = cfg.get("backend", "tmux")
+
+    if backend_name == "tmux":
+        from scry.backends.tmux import TmuxBackend
+
+        return TmuxBackend()
+    if backend_name == "zellij":
+        from scry.backends.zellij import ZellijBackend
+
+        return ZellijBackend()
+
+    raise ValueError(f"unknown backend {backend_name!r}: expected 'tmux' or 'zellij'")
