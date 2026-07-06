@@ -206,7 +206,8 @@ class TmuxBackend(MuxBackend):
 
     def ensure_session_group(self, session_group: str) -> None:
         """Create the group's base session (named after the group) if missing."""
-        self._create_detached_session(session_group, session_name=session_group)
+        if not self.session_exists(session_group):
+            self._create_detached_session(session_group, session_name=session_group)
 
     def _create_detached_session(self, session_group: str, session_name: str = None) -> str:
         """Create a detached session in the group; random 8-digit name if none given.

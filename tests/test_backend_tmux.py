@@ -184,6 +184,14 @@ def test_ensure_session_group_uses_group_as_name(mock_cmd, backend):
 
 
 @patch("scry.backends.tmux.TmuxCmd")
+def test_ensure_session_group_noop_when_exists(mock_cmd, backend):
+    """ensure_session_group does nothing if the session already exists."""
+    with patch.object(backend, "session_exists", return_value=True):
+        backend.ensure_session_group("main")
+    mock_cmd.assert_not_called()
+
+
+@patch("scry.backends.tmux.TmuxCmd")
 def test_create_session_random_name(mock_cmd, backend):
     """Generates 8-digit name when no name provided."""
     with patch.object(backend, "session_exists", return_value=False):
