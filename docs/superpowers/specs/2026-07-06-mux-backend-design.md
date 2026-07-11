@@ -132,8 +132,36 @@ degradations under zellij (no `#` indicator, rename caveat, name-as-identity).
 `RuntimeError("window rename is not supported with the zellij backend")` —
 a silent no-op masquerading as success is worse than a clear error.
 
-**Part B (two-client focus test):** _pending — results to be appended when the
-user runs the manual test._
+**Part B (two-client focus test, user-run 2026-07-11) plus controller headless
+verification (zellij clients hosted in throwaway tmux sessions):**
+
+- Independent per-client tab focus: **yes** — two clients held different tabs
+  simultaneously (zellij multiplayer works as assumed).
+- Remote `go-to-tab-name` / `new-tab` with clients attached: moves the
+  session's **first attached client only** (user observed T1 yanked; T2
+  unaffected).
+- Remote `go-to-tab-name` with **zero** clients: **no-op** — verified via
+  `dump-layout`: focus stayed on the last-created tab despite pre-focusing
+  another; the next client to attach landed on the last-focused tab, not the
+  pre-focused one.
+- A newly attaching client lands on the session's currently-focused tab, so
+  pre-focus **does** direct a new client when at least one other client is
+  already attached.
+
+**Decision (final):**
+
+- `attach_window` = `go-to-tab-name <tab>` (directs the new client when other
+  clients exist; harmless no-op otherwise), then a short-lived daemon thread
+  that re-fires `go-to-tab-name` at ~0.4s and ~1.2s (directs our client in the
+  zero-client case once it has connected; idempotent otherwise; failures
+  ignored), then blocking `zellij attach <session>`.
+- `rename_window` = `RuntimeError("window rename is not supported with the
+  zellij backend")` (per Part A: the focus-then-rename sequence reports
+  success without renaming anything).
+- Documented limitation: with multiple clients attached, attaching to a
+  window (and creating one — `new-tab` has the same routing) also pulls the
+  session's first client to that tab. Zellij 0.44 remote actions cannot
+  target a specific client.
 
 ## Out of scope
 
