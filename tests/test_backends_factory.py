@@ -53,3 +53,11 @@ def test_config_backend_rejects_unknown_cli_value():
         with patch("scry.scry.os.path.exists", return_value=False):
             with pytest.raises(SystemExit):
                 parse_args_and_configure()
+
+
+def test_get_backend_zellij():
+    from scry.backends.zellij import ZellijBackend
+
+    with patch("scry.backends.zellij.find_bin_in_path", return_value="/home/user/bin/zellij"):
+        backend = get_backend({"backend": "zellij"})
+    assert isinstance(backend, ZellijBackend)
