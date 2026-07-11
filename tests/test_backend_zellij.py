@@ -116,6 +116,14 @@ def test_ensure_session_group(mock_run, backend):
 
 
 @patch("scry.backends.zellij.subprocess.run")
+def test_ensure_session_group_noop_when_exists(mock_run, backend):
+    """ensure_session_group does nothing if the session already exists."""
+    with patch.object(backend, "session_exists", return_value=True):
+        backend.ensure_session_group("main")
+    mock_run.assert_not_called()
+
+
+@patch("scry.backends.zellij.subprocess.run")
 def test_create_window_success(mock_run, backend):
     mock_run.return_value = _completed(stdout=b"2\n")
     with (

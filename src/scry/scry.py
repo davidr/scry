@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interactive tmux window manager with session grouping support.
+"""Interactive terminal-multiplexer window manager (tmux or zellij) with session grouping support.
 
 This module provides a terminal user interface for managing tmux windows and sessions.
 It allows users to view, create, and switch between tmux windows within a session group,
@@ -94,7 +94,7 @@ def parse_args_and_configure() -> Dict:
                 cfg.update(file_config)
 
     # Load configuration from command-line arguments
-    parser = argparse.ArgumentParser(description="Interactive tmux window manager.")
+    parser = argparse.ArgumentParser(description="Interactive terminal-multiplexer window manager (tmux or zellij).")
     parser.add_argument(
         "--minnamelen",
         "-m",

@@ -16,9 +16,10 @@ _NO_SESSION_MARKERS = ("There is no active session", "No active zellij sessions 
 """
 
 _ATTACH_REFOCUS_DELAYS = (0.4, 1.2)
-""" tuple: seconds after launching attach to re-fire go-to-tab-name; remote focus
-actions no-op with zero clients, so the first client can only be directed after
-it has connected
+""" tuple: sequential sleep durations between go-to-tab-name re-fires after
+launching attach (so fires land at ~0.4s and ~1.6s elapsed); remote focus
+actions no-op with zero clients, so the first client can only be directed
+after it has connected
 """
 
 _LOGGER = logging.getLogger(__name__)
@@ -197,4 +198,6 @@ class ZellijBackend(MuxBackend):
 
     def ensure_session_group(self, session_group: str) -> None:
         """Create the session, detached, if it does not already exist."""
+        if self.session_exists(session_group):
+            return
         ZellijCmd(self._bin, ["attach", "--create-background", session_group])

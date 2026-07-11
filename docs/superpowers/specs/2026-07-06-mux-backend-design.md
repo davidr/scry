@@ -162,6 +162,10 @@ verification (zellij clients hosted in throwaway tmux sessions):**
   window (and creating one — `new-tab` has the same routing) also pulls the
   session's first client to that tab. Zellij 0.44 remote actions cannot
   target a specific client.
+- Deviation from the zellij table above: `session_attached` in zellij
+  `list_sessions` is hardcoded `"0"` rather than parsed — zellij has no remote
+  per-session attached query; scry.py never reads this field (only TmuxBackend
+  uses it internally).
 
 ## Out of scope
 
