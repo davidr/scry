@@ -1,7 +1,7 @@
 [project]
 name = "scry"
 version = "0.0.1c"
-description = "Interactive tmux window manager with session grouping support."
+description = "Interactive terminal-multiplexer (tmux/zellij) window manager with session grouping support."
 authors = [
     { name = "David Ressman", email = "davidr@ressman.org" },
 ]

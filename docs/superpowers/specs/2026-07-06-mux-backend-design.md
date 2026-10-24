@@ -65,6 +65,8 @@ Exactly the operations `scry.py` uses today, with the dict shapes it already con
 
 ## Zellij backend semantics
 
+> **Superseded** by `2026-10-24-zellij-parity-design.md` (stable tab IDs, `#` indicator, working rename, last-active-client routing rather than first-client).
+
 The `session_group` config value maps to a single zellij session name (default `main`);
 zellij tabs are scry windows. All scry clients attach to that one session, relying on
 zellij's multiplayer support (default `mirror_session false`) for independent per-client
@@ -117,6 +119,8 @@ flag, the zellij version requirement (tested on 0.44.3), and the documented
 degradations under zellij (no `#` indicator, rename caveat, name-as-identity).
 
 ## Spike results (2026-07-06)
+
+> **Superseded** by `2026-10-24-zellij-parity-design.md` (stable tab IDs, `#` indicator, working rename, last-active-client routing rather than first-client).
 
 **Part A (headless, zero attached clients):**
 

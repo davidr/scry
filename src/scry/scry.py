@@ -234,7 +234,7 @@ def process_new_window_command(command: str, session_group: str) -> Tuple[str, s
         backend.create_detached_window(window_name, session_group)
     except RuntimeError as e:
         if "bad window name" in str(e):
-            return None, "Invalid tmux window name"
+            return None, "Invalid window name"
         return None, str(e)
 
     windows = backend.list_windows(session_group)

@@ -3,7 +3,7 @@
 > **Warning**: Honestly, you really shouldn't use this for anything. It's awful and I've been using
 it forever and I'm too old to stop. I'm only making it public so that I can clone it from remote sites.
 
-An interactive terminal-multiplexer window manager (tmux by default, zellij optional) with session grouping support, providing a user-friendly interface for managing tmux windows and sessions.
+An interactive terminal-multiplexer window manager (tmux by default, zellij optional) with session grouping support, providing a user-friendly interface for managing windows and sessions.
 
 ## Features
 
@@ -20,7 +20,7 @@ An interactive terminal-multiplexer window manager (tmux by default, zellij opti
 ### Prerequisites
 
 - Python 3.12+
-- tmux (default backend) and/or zellij >= 0.44
+- tmux (default backend) and/or zellij >= 0.45.1
 - [uv](https://github.com/astral-sh/uv) (Python package installer and resolver)
 
 ### Recommended Installation (Virtual Environment using uv)
@@ -82,6 +82,7 @@ log_file: "/tmp/scry.log"
 dump_file: "~/.scry_windows.yml"
 hide_prefixes: false
 backend: tmux    # multiplexer backend: "tmux" (default) or "zellij"
+zellij_wake_keys: "\x07\x07"   # zellij only; see "Zellij backend" below
 ```
 
 When `hide_prefixes` is enabled, a window named like `proj+02` that sits directly
@@ -112,25 +113,41 @@ out, so only the `+NN` portion shows. It is disabled by default.
 ### Zellij backend
 
 Pass `--backend zellij` (or `-b zellij`), or set `backend: zellij` in `~/.scry.yml`, to run
-scry against [zellij](https://zellij.dev/) instead of tmux (tested on 0.44.3). An invalid
-backend value, or a missing binary for the selected backend, exits with a clear error rather
-than a traceback.
+scry against [zellij](https://zellij.dev/) instead of tmux. Requires zellij >= 0.45.1 (for
+`new-tab --no-focus`); developed against 0.45.1. An invalid backend value, or a missing
+binary for the selected backend, exits with a clear error rather than a traceback.
 
-Zellij windows map to zellij tabs, and — because zellij sessions are multiplayer — all
-clients share a single zellij session named after the session group, rather than each client
-getting its own tmux session in the group. This changes a few things from the tmux behavior:
+Zellij windows map to zellij tabs (identified by zellij's stable tab IDs), and — because
+zellij sessions are multiplayer — all clients share a single zellij session named after the
+session group, rather than each client getting its own tmux session in the group. Behavior
+matches tmux: the `#` indicator shows tabs that other clients are focused on, and `r` renames
+windows (verified after the fact).
 
-- No `#` attached-client indicator: zellij has no way to query which client is on which tab,
-  so the display can't show who's currently attached to a window.
-- **Window rename (`r`) is not supported under zellij.** Zellij's remote rename silently
-  reports success without renaming anything when there's no attached client to focus first,
-  so scry raises a clear error instead of pretending it worked. (Window identity is the tab
-  name, and renaming would otherwise reset a window's history-highlight position — moot
-  since rename isn't available.)
-- Attaching to a window pre-focuses its tab, then re-fires the focus shortly after connecting
-  (zellij can't direct a client before it has connected). **Limitation:** with more than one
-  client attached, attaching to (or creating) a window also pulls the session's *first*
-  attached client to that tab — zellij 0.44's remote actions can't target a specific client.
+- **Attaching.** scry runs `zellij attach` on a pty it owns (`backends/pty_client.py`) and
+  relays your terminal to it, holding input and output until the new client is on the right
+  tab (2 s fallback), and restoring the terminal on every exit path. A director thread sends
+  `zellij_wake_keys` to the new client so zellij routes the next remote action to it, then
+  issues `go-to-tab-by-id`, confirms, and puts back any other client that got pulled onto the
+  target tab (up to 3 attempts). Typically about 250 ms from spawn to reveal. If the tab was
+  closed meanwhile, scry reports "window <id> no longer exists" at its prompt.
+- **Creating windows.** `new-tab --no-focus` moves no client. Because of zellij bug #5594
+  (tabs created while no client is attached are 0x0 and silently discarded on the next
+  attach), scry runs a short-lived headless helper client during creation when no clients
+  are attached, checks that each new tab has a real size, and recreates it under a forced
+  helper if not. `l` uses one helper for the whole batch.
+- **`zellij_wake_keys`** (default `"\x07\x07"`, Ctrl-g twice) — each character is one
+  keypress sent to the newly attached client. It must be a sequence zellij consumes as a net
+  no-op under *your* keybindings; the default is right for zellij's stock keybindings (lock
+  then unlock). For a tmux-style config with prefix Ctrl-a, use `"\x01\x1b"` (Ctrl-a, then
+  Esc). In YAML use a double-quoted string so `\x` escapes work. **Warning:** a wrong value
+  is typed into the pane.
+
+Remaining caveats: directing the attaching client relies on zellij's undocumented "most
+recently active client" routing; zellij 0.45.1 reuses client IDs, so in rare races the
+attaching client may not be directed (it then shows whichever tab zellij picks).
+
+Live tests against a real zellij (throwaway `scry-test-*` sessions, stock keybindings):
+`SCRY_LIVE_ZELLIJ=1 uv run pytest -m live`.
 
 ## Development
 
@@ -163,9 +180,9 @@ The project uses Ruff for formatting, linting, and import sorting:
 - `src/scry/`
   - `__main__.py`: Entry point
   - `scry.py`: Core functionality
-  - `backends/`: multiplexer backends (`base.py` interface, `tmux.py`, `zellij.py`)
+  - `backends/`: multiplexer backends (`base.py` interface, `tmux.py`, `zellij.py`, `pty_client.py`)
   - `bin_utils.py`: Binary path utilities
-- `tests/`: Test suite (138 tests)
+- `tests/`: Test suite (189 tests)
 - `pyproject.toml`: Project metadata and dependencies for `uv`.
 - `README.md`: This file.
 
