@@ -214,10 +214,27 @@ def test_create_window_duplicate(backend):
             backend.create_detached_window("existing", "main")
 
 
-def test_rename_window_unsupported(backend):
-    """Zellij cannot rename a tab remotely; a clear error beats a silent no-op."""
-    with pytest.raises(RuntimeError, match="not supported"):
-        backend.rename_window("oldname", "newname", "main")
+@patch("scry.backends.zellij.subprocess.run")
+def test_rename_window_by_id(mock_run, backend):
+    mock_run.side_effect = [_completed(), _completed(stdout=_tabs_json((4, "newname", [])))]
+    backend.rename_window("4", "newname", "main")
+    first = mock_run.call_args_list[0][0][0]
+    assert first == ["/home/user/bin/zellij", "--session", "main", "action", "rename-tab-by-id", "4", "newname"]
+
+
+@patch("scry.backends.zellij.subprocess.run")
+def test_rename_window_unknown_id_raises(mock_run, backend):
+    """zellij exits 0 for nonexistent IDs, so the post-check must catch it."""
+    mock_run.side_effect = [_completed(), _completed(stdout=_tabs_json((1, "other", [])))]
+    with pytest.raises(RuntimeError, match="no window"):
+        backend.rename_window("4", "newname", "main")
+
+
+@patch("scry.backends.zellij.subprocess.run")
+def test_rename_window_not_applied_raises(mock_run, backend):
+    mock_run.side_effect = [_completed(), _completed(stdout=_tabs_json((4, "oldname", [])))]
+    with pytest.raises(RuntimeError, match="did not take effect"):
+        backend.rename_window("4", "newname", "main")
 
 
 @patch("scry.backends.zellij.threading.Thread")

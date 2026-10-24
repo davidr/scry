@@ -197,9 +197,19 @@ class ZellijBackend(MuxBackend):
         self._action(session_group, "new-tab", "--name", window_name)
 
     def rename_window(self, window_id: str, new_name: str, session_group: str) -> None:
-        """Renaming is unsupported: zellij's rename-tab silently no-ops without an
-        attached client (verified against 0.44.3), so fail loudly instead."""
-        raise RuntimeError("window rename is not supported with the zellij backend")
+        """Rename the tab with this tab ID, then verify the rename took effect.
+
+        zellij exits 0 for nonexistent tab IDs, so the tabs are re-listed.
+
+        Raises:
+            RuntimeError: If no tab has this ID, or its name is not new_name afterwards.
+        """
+        self._action(session_group, "rename-tab-by-id", window_id, new_name)
+        tabs = {str(tab["tab_id"]): tab["name"] for tab in self._list_tabs(session_group)}
+        if window_id not in tabs:
+            raise RuntimeError(f"no window with id {window_id} in session group {session_group}")
+        if tabs[window_id] != new_name:
+            raise RuntimeError(f"rename of window {window_id} to {new_name} did not take effect")
 
     def _refocus_tab(self, window_id: str, session_group: str) -> None:
         """Re-fire go-to-tab-name after the attaching client has had time to connect.
