@@ -111,6 +111,29 @@ def test_live_tab_created_with_zero_clients_survives_attach(live):
     assert "x" in _names(live)
 
 
+def test_live_create_recovers_from_stale_client_listing(live):
+    """A client listed at create time but gone by new-tab must not cost the window.
+
+    zellij briefly lists the --create-background client right after creating a
+    session; this injects that stale read deterministically.
+    """
+    live.backend.ensure_session_group(live.name)
+    real_list_clients = live.backend._list_clients
+    reads = itertools.count()
+
+    def stale_first(session_group):
+        return ["stale"] if next(reads) == 0 else real_list_clients(session_group)
+
+    with patch.object(live.backend, "_list_clients", side_effect=stale_first):
+        live.backend.create_detached_window("x", live.name)
+    sizes = {t["name"]: (t["viewport_rows"], t["viewport_columns"]) for t in live.backend._list_tabs(live.name)}
+    assert list(sizes).count("x") == 1
+    assert 0 not in sizes["x"]
+    live.host_client()
+    time.sleep(1.5)
+    assert "x" in _names(live)
+
+
 def test_live_create_moves_no_client(live):
     """Creating a tab leaves every attached client on the tab it was viewing."""
     live.backend.ensure_session_group(live.name)

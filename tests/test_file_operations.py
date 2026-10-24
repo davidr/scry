@@ -93,7 +93,16 @@ def test_load_uses_single_headless_client(tmp_path):
             if helper["attached"]:
                 out += b"9 terminal_0 bash\n"
         elif "new-tab" in args:
-            tabs.append({"tab_id": len(tabs), "name": args[-1], "other_focused_clients": []})
+            size = 22 if helper["attached"] else 0
+            tabs.append(
+                {
+                    "tab_id": len(tabs),
+                    "name": args[-1],
+                    "other_focused_clients": [],
+                    "viewport_rows": size,
+                    "viewport_columns": size,
+                }
+            )
             out = f"{len(tabs) - 1}\n".encode()
         return MagicMock(returncode=0, stdout=out, stderr=b"")
 

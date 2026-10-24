@@ -150,6 +150,7 @@ class ZellijBackend(MuxBackend):
         """
         self._bin = find_bin_in_path("zellij")
         self._headless_depth = 0
+        self._helper: Optional[PtyClient] = None
         self._wake_keys = wake_keys
 
     def _action(self, session_group: str, *action_args: str) -> ZellijCmd:
@@ -204,36 +205,38 @@ class ZellijBackend(MuxBackend):
             time.sleep(_CLIENT_POLL_INTERVAL)
 
     @contextmanager
-    def _headless_client(self, session_group: str) -> Iterator[None]:
-        """Guarantee at least one client is attached for the duration of the block.
+    def _headless_client(self, session_group: str, force: bool = False) -> Iterator[None]:
+        """Try to keep at least one client attached for the duration of the block.
 
         A tab created while zero clients are attached is 0x0, buffers output
         without bound, and is discarded when the first client attaches
-        (zellij-org/zellij#5594). If no client is attached, a helper client is
-        attached on a scry-owned pty (draining its output) and terminated on
-        exit; --on-force-close detach makes that terminate a detach, never a
-        session quit. If clients already exist, nothing is spawned. Re-entrant:
-        nested use while a helper block is active spawns nothing.
+        (zellij-org/zellij#5594). If no client is attached (or force is set), a
+        helper client is attached on a scry-owned pty (draining its output) and
+        terminated on exit; --on-force-close detach makes that terminate a
+        detach, never a session quit. Re-entrant: nested use spawns nothing,
+        unless force is set and no helper of ours is attached.
+
+        Without force this is best effort: a listed client may already be
+        leaving (zellij briefly lists the --create-background client), so
+        create_detached_window verifies the result and retries with force.
+
+        Args:
+            session_group: The zellij session.
+            force: Spawn a helper even if clients are listed, unless ours is active.
 
         Raises:
             RuntimeError: If the helper does not appear in list-clients in time.
         """
-        if self._headless_depth > 0:
-            self._headless_depth += 1
-            try:
-                yield
-            finally:
-                self._headless_depth -= 1
-            return
-
-        known = set(self._list_clients(session_group))
         helper: Optional[PtyClient] = None
-        if not known:
-            helper = PtyClient(
-                [self._bin, "attach", session_group, "options", "--on-force-close", "detach"],
-                _HELPER_ROWS,
-                _HELPER_COLS,
-            )
+        if self._helper is None and (force or self._headless_depth == 0):
+            known = set(self._list_clients(session_group))
+            if force or not known:
+                helper = PtyClient(
+                    [self._bin, "attach", session_group, "options", "--on-force-close", "detach"],
+                    _HELPER_ROWS,
+                    _HELPER_COLS,
+                )
+                self._helper = helper
         try:
             if helper is not None:
                 helper.start_draining()
@@ -246,6 +249,7 @@ class ZellijBackend(MuxBackend):
                 self._headless_depth -= 1
         finally:
             if helper is not None:
+                self._helper = None
                 helper.terminate()
 
     def creating_windows(self, session_group: str) -> ContextManager[None]:
@@ -303,12 +307,15 @@ class ZellijBackend(MuxBackend):
         """Create a new tab in the session without moving any client's focus.
 
         The tab is created inside _headless_client so that at least one client
-        is attached (avoiding zellij-org/zellij#5594).
+        is attached (avoiding zellij-org/zellij#5594). The new tab's viewport is
+        then checked: a 0x0 tab means the listed client left before new-tab ran,
+        so the tab is closed and recreated once under a forced helper.
 
         Raises:
-            RuntimeError: If the session does not exist or a tab with this
+            RuntimeError: If the session does not exist, a tab with this
                 name already exists (zellij itself allows duplicates; scry
-                requires unique names because the name is the window_id).
+                requires unique names), the helper client cannot attach, or
+                the recreated tab still has no size (it is closed first).
         """
         if not self.session_exists(session_group):
             raise RuntimeError(f"Session group {session_group} does not exist")
@@ -316,8 +323,23 @@ class ZellijBackend(MuxBackend):
         if self.window_exists(window_name, session_group):
             raise RuntimeError(f"Window {window_name} already exists in session group {session_group}")
 
-        with self._headless_client(session_group):
-            self._action(session_group, "new-tab", "--no-focus", "--name", window_name)
+        for force in (False, True):
+            with self._headless_client(session_group, force=force):
+                tab_id = self._action(session_group, "new-tab", "--no-focus", "--name", window_name).stdout[0].strip()
+            if self._tab_has_size(session_group, tab_id):
+                return
+            # Created with zero clients after all (zellij #5594): it would be
+            # discarded on the next attach, so remove it now.
+            _LOGGER.warning("zellij created tab %s (%s) with no size; closing it", tab_id, window_name)
+            self._action(session_group, "close-tab-by-id", tab_id)
+        raise RuntimeError(f"zellij created window {window_name} with no size (zellij-org/zellij#5594)")
+
+    def _tab_has_size(self, session_group: str, tab_id: str) -> bool:
+        """Return True if the tab exists and has a nonzero viewport (not a #5594 0x0 tab)."""
+        for tab in self._list_tabs(session_group):
+            if str(tab["tab_id"]) == tab_id:
+                return tab.get("viewport_rows", 0) > 0 and tab.get("viewport_columns", 0) > 0
+        return False
 
     def rename_window(self, window_id: str, new_name: str, session_group: str) -> None:
         """Rename the tab with this tab ID, then verify the rename took effect.

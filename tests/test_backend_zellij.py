@@ -187,6 +187,11 @@ def test_ensure_session_group_noop_when_exists(mock_run, backend):
     mock_run.assert_not_called()
 
 
+def _tab(tab_id, rows=22, cols=80):
+    """One list-tabs -j object for size checks."""
+    return {"tab_id": tab_id, "name": f"t{tab_id}", "viewport_rows": rows, "viewport_columns": cols}
+
+
 @patch("scry.backends.zellij.PtyClient")
 @patch("scry.backends.zellij.subprocess.run")
 def test_create_window_no_focus_argv(mock_run, mock_pty, backend):
@@ -196,6 +201,7 @@ def test_create_window_no_focus_argv(mock_run, mock_pty, backend):
         patch.object(backend, "session_exists", return_value=True),
         patch.object(backend, "window_exists", return_value=False),
         patch.object(backend, "_list_clients", return_value=["1"]),
+        patch.object(backend, "_list_tabs", return_value=[_tab(2)]),
     ):
         backend.create_detached_window("newwin", "main")
     mock_pty.assert_not_called()
@@ -216,6 +222,7 @@ def test_create_window_zero_clients_spawns_headless(mock_run, mock_pty, backend)
         patch.object(backend, "session_exists", return_value=True),
         patch.object(backend, "window_exists", return_value=False),
         patch.object(backend, "_list_clients", side_effect=lambda s: next(clients)),
+        patch.object(backend, "_list_tabs", return_value=[_tab(2)]),
     ):
         backend.create_detached_window("newwin", "main")
     mock_pty.assert_called_once_with(
@@ -247,6 +254,107 @@ def test_headless_client_timeout_raises_and_cleans_up(mock_run, mock_pty, backen
             backend.create_detached_window("newwin", "main")
     mock_pty.return_value.terminate.assert_called_once_with()
     mock_run.assert_not_called()
+
+
+def _new_tab_runs(mock_run):
+    """The argv tails of the new-tab and close-tab-by-id actions run, in order."""
+    return [c.args[0][4:] for c in mock_run.call_args_list if c.args[0][4] in ("new-tab", "close-tab-by-id")]
+
+
+@patch("scry.backends.zellij.PtyClient")
+@patch("scry.backends.zellij.subprocess.run")
+def test_create_window_unsized_tab_is_recreated_under_helper(mock_run, mock_pty, backend):
+    """A listed client that is gone by new-tab yields a 0x0 tab: close it, recreate under a helper.
+
+    zellij briefly lists the --create-background client after creating a session,
+    so "clients present" can be stale by the time new-tab runs (zellij #5594).
+    """
+    mock_run.side_effect = [_completed(stdout=b"2\n"), _completed(), _completed(stdout=b"3\n")]
+    clients = iter([["1"], [], ["9"]])
+    tabs = iter([[_tab(0), _tab(2, 0, 0)], [_tab(0), _tab(3)]])
+    with (
+        patch.object(backend, "session_exists", return_value=True),
+        patch.object(backend, "window_exists", return_value=False),
+        patch.object(backend, "_list_clients", side_effect=lambda s: next(clients)),
+        patch.object(backend, "_list_tabs", side_effect=lambda s: next(tabs)),
+    ):
+        backend.create_detached_window("newwin", "main")
+    assert _new_tab_runs(mock_run) == [
+        ["new-tab", "--no-focus", "--name", "newwin"],
+        ["close-tab-by-id", "2"],
+        ["new-tab", "--no-focus", "--name", "newwin"],
+    ]
+    mock_pty.assert_called_once()
+    mock_pty.return_value.terminate.assert_called_once_with()
+
+
+@patch("scry.backends.zellij.PtyClient")
+@patch("scry.backends.zellij.subprocess.run")
+def test_create_window_helper_spawned_even_if_clients_listed_on_retry(mock_run, mock_pty, backend):
+    """The retry spawns its own helper even when list-clients still shows someone."""
+    mock_run.side_effect = [_completed(stdout=b"2\n"), _completed(), _completed(stdout=b"3\n")]
+    clients = iter([["1"], ["1"], ["1", "9"]])
+    tabs = iter([[_tab(2, 0, 0)], [_tab(3)]])
+    with (
+        patch.object(backend, "session_exists", return_value=True),
+        patch.object(backend, "window_exists", return_value=False),
+        patch.object(backend, "_list_clients", side_effect=lambda s: next(clients)),
+        patch.object(backend, "_list_tabs", side_effect=lambda s: next(tabs)),
+    ):
+        backend.create_detached_window("newwin", "main")
+    mock_pty.assert_called_once()
+
+
+@patch("scry.backends.zellij.PtyClient")
+@patch("scry.backends.zellij.subprocess.run")
+def test_create_window_still_unsized_raises_and_leaves_no_tab(mock_run, mock_pty, backend):
+    """If the retry is also 0x0, that tab is closed too and the create fails loudly."""
+    mock_run.side_effect = [
+        _completed(stdout=b"2\n"),
+        _completed(),
+        _completed(stdout=b"3\n"),
+        _completed(),
+    ]
+    clients = iter([["1"], [], ["9"]])
+    tabs = iter([[_tab(2, 0, 0)], [_tab(3, 0, 0)]])
+    with (
+        patch.object(backend, "session_exists", return_value=True),
+        patch.object(backend, "window_exists", return_value=False),
+        patch.object(backend, "_list_clients", side_effect=lambda s: next(clients)),
+        patch.object(backend, "_list_tabs", side_effect=lambda s: next(tabs)),
+    ):
+        with pytest.raises(RuntimeError, match="no size"):
+            backend.create_detached_window("newwin", "main")
+    assert _new_tab_runs(mock_run)[1::2] == [["close-tab-by-id", "2"], ["close-tab-by-id", "3"]]
+
+
+@patch("scry.backends.zellij.PtyClient")
+def test_forced_helper_inside_helperless_batch(mock_pty, backend):
+    """A forced helper spawns inside a batch that started with clients listed (and no helper)."""
+    clients = iter([["1"], ["1"], ["1", "9"]])
+    with (
+        patch.object(backend, "_list_clients", side_effect=lambda s: next(clients)),
+        patch("scry.backends.zellij.time.sleep"),
+    ):
+        with backend.creating_windows("main"):
+            mock_pty.assert_not_called()
+            with backend._headless_client("main", force=True):
+                mock_pty.assert_called_once()
+    mock_pty.return_value.terminate.assert_called_once_with()
+
+
+@patch("scry.backends.zellij.PtyClient")
+def test_forced_helper_reuses_active_helper(mock_pty, backend):
+    """A forced nested use while our helper is attached spawns nothing more."""
+    clients = iter([[], ["9"]])
+    with (
+        patch.object(backend, "_list_clients", side_effect=lambda s: next(clients)),
+        patch("scry.backends.zellij.time.sleep"),
+    ):
+        with backend.creating_windows("main"):
+            with backend._headless_client("main", force=True):
+                pass
+    mock_pty.assert_called_once()
 
 
 def test_wait_for_new_client_returns_first_unknown(backend):
