@@ -107,6 +107,10 @@ class ZellijCmd(object):
         if cmd.returncode != 0:
             _LOGGER.error("zellij returned nonzero with stderr: %s", cmd.stderr)
             raise RuntimeError(f"zellij returned nonzero with stderr: {cmd.stderr}")
+        if cmd.stderr and any(marker.encode() in cmd.stderr for marker in _NO_SESSION_MARKERS):
+            # zellij 0.45.1 exits 0 when the --session target does not exist.
+            _LOGGER.debug("zellij found no session; stderr: %s", cmd.stderr)
+            raise RuntimeError(f"zellij found no session: {cmd.stderr}")
 
         self._cmd = cmd
         self._cmd_executed = True

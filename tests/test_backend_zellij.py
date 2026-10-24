@@ -39,6 +39,16 @@ def test_zellijcmd_nonzero_raises(mock_run):
 
 
 @patch("scry.backends.zellij.subprocess.run")
+def test_zellijcmd_session_not_found_raises_despite_zero_exit(mock_run):
+    """zellij 0.45.1 exits 0 when the --session target is missing; treat it as an error."""
+    mock_run.return_value = _completed(
+        returncode=0, stderr=b"Session 'main' not found. The following sessions are active:\nwork\n"
+    )
+    with pytest.raises(RuntimeError, match="not found. The following sessions are active"):
+        ZellijCmd("/home/user/bin/zellij", ["--session", "main", "action", "list-tabs", "-j"])
+
+
+@patch("scry.backends.zellij.subprocess.run")
 def test_zellijcmd_no_capture_runs_without_pipes(mock_run):
     """capture=False leaves stdout/stderr connected to the tty (attach needs this)."""
     mock_run.return_value = _completed()
@@ -97,6 +107,15 @@ def test_list_windows_session_not_found_returns_empty(mock_run, backend):
     """Other sessions exist but this one doesn't: no windows yet, not an error."""
     mock_run.return_value = _completed(
         returncode=1, stderr=b"Session 'main' not found. The following sessions are active:\nwork\n"
+    )
+    assert backend.list_windows("main") == []
+
+
+@patch("scry.backends.zellij.subprocess.run")
+def test_list_windows_session_not_found_zero_exit_returns_empty(mock_run, backend):
+    """As above, with the exit code zellij 0.45.1 actually returns (0, empty stdout)."""
+    mock_run.return_value = _completed(
+        returncode=0, stderr=b"Session 'main' not found. The following sessions are active:\nwork\n"
     )
     assert backend.list_windows("main") == []
 
