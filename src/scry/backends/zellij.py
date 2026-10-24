@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """zellij backend: subprocess command wrapper and the ZellijBackend implementation."""
 
+import json
 import logging
 import subprocess
 import threading
@@ -11,7 +12,11 @@ from typing import Dict, List
 from scry.backends.base import MuxBackend
 from scry.bin_utils import find_bin_in_path
 
-_NO_SESSION_MARKERS = ("There is no active session", "No active zellij sessions found")
+_NO_SESSION_MARKERS = (
+    "There is no active session",
+    "No active zellij sessions found",
+    "not found. The following sessions are active",
+)
 """ tuple: stderr fragments that mean "no session/server yet", not a real error
 """
 
@@ -106,10 +111,32 @@ class ZellijBackend(MuxBackend):
     def _action(self, session_group: str, *action_args: str) -> ZellijCmd:
         return ZellijCmd(self._bin, ["--session", session_group, "action", *action_args])
 
+    def _list_tabs(self, session_group: str) -> List[Dict]:
+        """Return the session's tabs as parsed from `action list-tabs -j`.
+
+        Raises:
+            RuntimeError: If the command fails (including a missing session).
+        """
+        cmd = self._action(session_group, "list-tabs", "-j")
+        return json.loads("\n".join(cmd.stdout))
+
+    def _list_clients(self, session_group: str) -> List[str]:
+        """Return the IDs of clients attached to the session (strings)."""
+        cmd = self._action(session_group, "list-clients")
+        return [line.split()[0] for line in cmd.stdout[1:] if line.strip()]
+
+    def _client_tabs(self, session_group: str) -> Dict[str, int]:
+        """Map each attached client ID (str) to the tab_id it is viewing."""
+        mapping: Dict[str, int] = {}
+        for tab in self._list_tabs(session_group):
+            for client in tab.get("other_focused_clients", []):
+                mapping[str(client)] = tab["tab_id"]
+        return mapping
+
     def list_windows(self, session_group: str) -> List[Dict[str, str]]:
         """Return the session's tabs as windows sorted by name; [] if no session."""
         try:
-            cmd = self._action(session_group, "query-tab-names")
+            tabs = self._list_tabs(session_group)
         except RuntimeError as e:
             _LOGGER.error("zellij command failed: %s", str(e))
             if any(marker in str(e) for marker in _NO_SESSION_MARKERS):
@@ -118,9 +145,12 @@ class ZellijBackend(MuxBackend):
             raise
 
         windows = [
-            {"window_id": name, "window_name": name, "window_active_clients": "0"}
-            for name in cmd.stdout
-            if name.strip()
+            {
+                "window_id": str(tab["tab_id"]),
+                "window_name": tab["name"],
+                "window_active_clients": str(len(tab.get("other_focused_clients", []))),
+            }
+            for tab in tabs
         ]
         return sorted(windows, key=lambda k: k["window_name"])
 

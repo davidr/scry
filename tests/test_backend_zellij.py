@@ -1,5 +1,6 @@
 """Tests for the zellij backend."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -49,18 +50,80 @@ def test_zellijcmd_no_capture_runs_without_pipes(mock_run):
 # --- ZellijBackend method tests ---
 
 
+def _tabs_json(*tabs):
+    """Build pretty-printed list-tabs -j output from (tab_id, name, viewers) tuples."""
+    objs = [
+        {
+            "position": i,
+            "name": name,
+            "active": bool(viewers),
+            "other_focused_clients": viewers,
+            "tab_id": tab_id,
+            "viewport_rows": 49,
+            "viewport_columns": 50,
+            "is_fullscreen_active": False,
+        }
+        for i, (tab_id, name, viewers) in enumerate(tabs)
+    ]
+    return json.dumps(objs, indent=2).encode()
+
+
+LIST_TABS_JSON = _tabs_json((2, "zeta", [1, 3]), (0, "Tab #1", []), (1, "alpha", []))
+
+
 @patch("scry.backends.zellij.subprocess.run")
-def test_list_windows_names_are_id_and_name(mock_run, backend):
-    """Tab names double as window_id and window_name; active clients always 0; sorted."""
-    mock_run.return_value = _completed(stdout=b"zeta\nTab #1\nalpha\n")
-    windows = backend.list_windows("main")
-    assert windows == [
-        {"window_id": "Tab #1", "window_name": "Tab #1", "window_active_clients": "0"},
-        {"window_id": "alpha", "window_name": "alpha", "window_active_clients": "0"},
-        {"window_id": "zeta", "window_name": "zeta", "window_active_clients": "0"},
+def test_list_windows_uses_tab_ids_and_client_counts(mock_run, backend):
+    """Tab IDs are window_ids; client count comes from other_focused_clients; sorted by name."""
+    mock_run.return_value = _completed(stdout=LIST_TABS_JSON)
+    assert backend.list_windows("main") == [
+        {"window_id": "0", "window_name": "Tab #1", "window_active_clients": "0"},
+        {"window_id": "1", "window_name": "alpha", "window_active_clients": "0"},
+        {"window_id": "2", "window_name": "zeta", "window_active_clients": "2"},
     ]
     argv = mock_run.call_args[0][0]
-    assert argv == ["/home/user/bin/zellij", "--session", "main", "action", "query-tab-names"]
+    assert argv == ["/home/user/bin/zellij", "--session", "main", "action", "list-tabs", "-j"]
+
+
+@patch("scry.backends.zellij.subprocess.run")
+def test_list_windows_duplicate_names_distinct_ids(mock_run, backend):
+    mock_run.return_value = _completed(stdout=_tabs_json((4, "dup", []), (7, "dup", [])))
+    windows = backend.list_windows("main")
+    assert [(w["window_id"], w["window_name"]) for w in windows] == [("4", "dup"), ("7", "dup")]
+
+
+@patch("scry.backends.zellij.subprocess.run")
+def test_list_windows_session_not_found_returns_empty(mock_run, backend):
+    """Other sessions exist but this one doesn't: no windows yet, not an error."""
+    mock_run.return_value = _completed(
+        returncode=1, stderr=b"Session 'main' not found. The following sessions are active:\nwork\n"
+    )
+    assert backend.list_windows("main") == []
+
+
+@patch("scry.backends.zellij.subprocess.run")
+def test_list_clients_parses_table(mock_run, backend):
+    mock_run.return_value = _completed(
+        stdout=(
+            b"CLIENT_ID ZELLIJ_PANE_ID RUNNING_COMMAND\n"
+            b"1         terminal_5     N/A            \n"
+            b"2         terminal_3     N/A            \n"
+        )
+    )
+    assert backend._list_clients("main") == ["1", "2"]
+    argv = mock_run.call_args[0][0]
+    assert argv == ["/home/user/bin/zellij", "--session", "main", "action", "list-clients"]
+
+
+@patch("scry.backends.zellij.subprocess.run")
+def test_list_clients_header_only(mock_run, backend):
+    mock_run.return_value = _completed(stdout=b"CLIENT_ID ZELLIJ_PANE_ID RUNNING_COMMAND\n")
+    assert backend._list_clients("main") == []
+
+
+@patch("scry.backends.zellij.subprocess.run")
+def test_client_tabs_maps_clients(mock_run, backend):
+    mock_run.return_value = _completed(stdout=LIST_TABS_JSON)
+    assert backend._client_tabs("main") == {"1": 2, "3": 2}
 
 
 @patch("scry.backends.zellij.subprocess.run")

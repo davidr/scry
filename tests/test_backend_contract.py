@@ -1,5 +1,6 @@
 """Contract tests: every backend returns the same normalized shapes."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,7 +24,12 @@ CASES = {
     "zellij": {
         "cls": ZellijBackend,
         "module": "scry.backends.zellij",
-        "windows_stdout": b"beta\nalpha\n",
+        "windows_stdout": json.dumps(
+            [
+                {"position": 0, "name": "beta", "tab_id": 1, "other_focused_clients": []},
+                {"position": 1, "name": "alpha", "tab_id": 0, "other_focused_clients": []},
+            ]
+        ).encode(),
         "sessions_stdout": b"main [Created 5s ago] \n",
         "no_server_stderr": b"There is no active session!\n",
     },
