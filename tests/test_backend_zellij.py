@@ -320,11 +320,12 @@ GO_TO = ["/home/user/bin/zellij", "--session", "main", "action", "go-to-tab-by-i
 
 @patch("scry.backends.zellij.proxy")
 @patch("scry.backends.zellij.PtyClient")
-def test_attach_spawns_client_with_detach_on_force_close(mock_pty, mock_proxy, backend):
+@patch("scry.backends.zellij.subprocess.run")
+def test_attach_spawns_client_with_detach_on_force_close(mock_run, mock_pty, mock_proxy, backend):
     """The attach runs on a scry-owned pty and is proxied; the director thread is started."""
+    mock_run.return_value = _completed(stdout=_tabs_json((0, "x", [1]), (5, "y", [])))
     with (
-        patch.object(backend, "_list_clients", return_value=["1"]),
-        patch.object(backend, "_client_tabs", return_value={"1": 0}),
+        patch.object(backend, "_list_clients", return_value=["1", "4"]),
         patch.object(backend, "_direct_client") as mock_direct,
     ):
         backend.attach_window("5", "main")
@@ -332,7 +333,59 @@ def test_attach_spawns_client_with_detach_on_force_close(mock_pty, mock_proxy, b
     assert argv == ["/home/user/bin/zellij", "attach", "main", "options", "--on-force-close", "detach"]
     assert mock_proxy.call_args[0][0] is mock_pty.return_value
     args = mock_direct.call_args[0]
-    assert args[:5] == ("main", 5, mock_pty.return_value, {"1"}, {"1": 0})
+    # Client 4 is listed but views no tab: it must still count as known.
+    assert args[:5] == ("main", 5, mock_pty.return_value, {"1", "4"}, {"1": 0})
+
+
+@patch("scry.backends.zellij.proxy")
+@patch("scry.backends.zellij.PtyClient")
+@patch("scry.backends.zellij.subprocess.run")
+def test_attach_known_includes_clients_seen_only_in_tabs(mock_run, mock_pty, mock_proxy, backend):
+    """A client that appears between the two snapshot calls is known, not mistaken for ours."""
+    mock_run.return_value = _completed(stdout=_tabs_json((0, "x", [1, 2]), (5, "y", [])))
+    with (
+        patch.object(backend, "_list_clients", return_value=["1"]),
+        patch.object(backend, "_direct_client") as mock_direct,
+    ):
+        backend.attach_window("5", "main")
+    assert mock_direct.call_args[0][3] == {"1", "2"}
+
+
+@patch("scry.backends.zellij.proxy")
+@patch("scry.backends.zellij.PtyClient")
+@patch("scry.backends.zellij.subprocess.run")
+def test_attach_missing_tab_raises_before_spawning(mock_run, mock_pty, mock_proxy, backend):
+    mock_run.return_value = _completed(stdout=_tabs_json((0, "x", [1])))
+    with (
+        patch.object(backend, "_list_clients", return_value=["1"]),
+        patch.object(backend, "_direct_client") as mock_direct,
+    ):
+        with pytest.raises(RuntimeError, match="window 5 no longer exists"):
+            backend.attach_window("5", "main")
+    mock_pty.assert_not_called()
+    mock_proxy.assert_not_called()
+    mock_direct.assert_not_called()
+
+
+def test_wait_for_new_client_stops_when_client_dies(backend):
+    """An alive() of False ends the wait at once instead of polling to the timeout."""
+    with (
+        patch.object(backend, "_list_clients", return_value=["1"]) as mock_list,
+        patch("scry.backends.zellij.time.sleep") as mock_sleep,
+    ):
+        assert backend._wait_for_new_client("main", {"1"}, alive=lambda: False) is None
+    assert mock_list.call_count <= 1
+    mock_sleep.assert_not_called()
+
+
+def test_direct_client_passes_liveness_to_wait(backend):
+    """The director stops waiting for the new client as soon as its process exits."""
+    client = MagicMock()
+    gate = threading.Event()
+    with patch.object(backend, "_wait_for_new_client", return_value=None) as mock_wait:
+        backend._direct_client("main", 5, client, {"1"}, {}, gate)
+    assert mock_wait.call_args.kwargs["alive"] == client.is_alive
+    assert gate.is_set()
 
 
 def _direct(backend, client, polls, before=None, new_id="3"):
@@ -361,7 +414,7 @@ def test_direct_client_wakes_then_focuses(backend):
 def test_direct_client_restores_displaced_client(backend):
     """Another client moved instead: put it back, then re-wake and retry."""
     client = MagicMock()
-    polls = [{"1": 5, "3": 2}, {"1": 2, "3": 5}]
+    polls = [{"1": 5, "3": 2}, {"1": 2, "3": 5}]  # 1 was pulled onto the target tab 5
     gate, calls = _direct(backend, client, polls, before={"1": 2})
     assert calls == [
         ("write", b"\x07"),
@@ -372,6 +425,15 @@ def test_direct_client_restores_displaced_client(backend):
         ("write", b"\x07"),
         ("run", GO_TO + ["5"]),
     ]
+    assert gate.is_set()
+
+
+def test_direct_client_ignores_client_moving_elsewhere(backend):
+    """A client that moved to some other tab (its user switched tabs) is not reverted."""
+    client = MagicMock()
+    polls = [{"1": 7, "3": 2}, {"1": 7, "3": 5}]
+    gate, calls = _direct(backend, client, polls, before={"1": 2})
+    assert calls == [("write", b"\x07"), ("write", b"\x07"), ("run", GO_TO + ["5"])]
     assert gate.is_set()
 
 

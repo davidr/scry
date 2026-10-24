@@ -90,3 +90,26 @@ def test_dump_and_load_roundtrip(mock_list, mock_create, tmp_path):
     assert "alpha" in created_names
     assert "gamma" in created_names
     assert "beta" not in created_names
+
+
+class _StopLoop(Exception):
+    """Raised by a mocked prompt to end do_table_loop."""
+
+
+def test_attach_error_shows_at_prompt(mock_windows, clean_window_history):
+    """A RuntimeError from attach_window becomes the next prompt's error message."""
+    from scry.scry import do_table_loop
+
+    with (
+        patch("scry.scry.backend") as mock_backend,
+        patch("scry.scry.setup_display") as mock_display,
+        patch("scry.scry.Prompt.ask", side_effect=["0", _StopLoop()]),
+    ):
+        mock_backend.list_windows.return_value = mock_windows
+        mock_backend.attach_window.side_effect = RuntimeError("window @1 no longer exists")
+        try:
+            do_table_loop()
+        except _StopLoop:
+            pass
+    assert mock_display.call_args_list[1].args[2] == "window @1 no longer exists"
+    assert "@1" not in WINDOW_HISTORY

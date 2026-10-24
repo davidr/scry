@@ -9,7 +9,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import ContextManager, Dict, Iterator, List, Optional, Set
+from typing import Callable, ContextManager, Dict, Iterator, List, Optional, Set
 
 from scry.backends.base import MuxBackend
 from scry.backends.pty_client import PtyClient, proxy
@@ -51,6 +51,15 @@ zellij's 0x0 tab (zellij-org/zellij#5594)
 """
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _map_client_tabs(tabs: List[Dict]) -> Dict[str, int]:
+    """Map each client ID (str) in list-tabs -j output to the tab_id it is viewing."""
+    mapping: Dict[str, int] = {}
+    for tab in tabs:
+        for client in tab.get("other_focused_clients", []):
+            mapping[str(client)] = tab["tab_id"]
+    return mapping
 
 
 class ZellijCmd(object):
@@ -162,25 +171,31 @@ class ZellijBackend(MuxBackend):
 
     def _client_tabs(self, session_group: str) -> Dict[str, int]:
         """Map each attached client ID (str) to the tab_id it is viewing."""
-        mapping: Dict[str, int] = {}
-        for tab in self._list_tabs(session_group):
-            for client in tab.get("other_focused_clients", []):
-                mapping[str(client)] = tab["tab_id"]
-        return mapping
+        return _map_client_tabs(self._list_tabs(session_group))
 
-    def _wait_for_new_client(self, session_group: str, known: Set[str], timeout: float = 3.0) -> Optional[str]:
+    def _wait_for_new_client(
+        self,
+        session_group: str,
+        known: Set[str],
+        timeout: float = 3.0,
+        alive: Optional[Callable[[], bool]] = None,
+    ) -> Optional[str]:
         """Poll list-clients until a client not in known appears.
 
         Args:
             session_group: The zellij session.
             known: Client IDs to ignore (those attached before the new client).
             timeout: Seconds to keep polling.
+            alive: If given, polling stops (returning None) as soon as it
+                returns False, e.g. the awaited client's process has exited.
 
         Returns:
             The first new client ID, or None if none appeared within timeout.
         """
         deadline = time.monotonic() + timeout
         while True:
+            if alive is not None and not alive():
+                return None
             new = [c for c in self._list_clients(session_group) if c not in known]
             if new:
                 return new[0]
@@ -350,11 +365,19 @@ class ZellijBackend(MuxBackend):
                 even if direction has not finished.
 
         Raises:
-            RuntimeError: If the session's clients or tabs cannot be listed.
+            RuntimeError: If the tab no longer exists, or the session's
+                clients or tabs cannot be listed.
         """
         tab_id = int(window_id)
-        known = set(self._list_clients(session_group))
-        before = self._client_tabs(session_group)
+        # One snapshot: a client seen by either call (including one that
+        # attached between them, or one viewing no tab) is pre-existing.
+        clients = self._list_clients(session_group)
+        tabs = self._list_tabs(session_group)
+        if not any(tab["tab_id"] == tab_id for tab in tabs):
+            # go-to-tab-by-id silently no-ops on a missing ID.
+            raise RuntimeError(f"window {window_id} no longer exists")
+        before = _map_client_tabs(tabs)
+        known = set(clients) | set(before)
         size = shutil.get_terminal_size()
         client = PtyClient(
             [self._bin, "attach", session_group, "options", "--on-force-close", "detach"],
@@ -389,9 +412,11 @@ class ZellijBackend(MuxBackend):
 
         Waits for the new client to appear, presses the wake keys in it (making
         it the routing target for remote actions), then sends go-to-tab-by-id
-        and polls list-tabs for the outcome. If a pre-existing client moved
-        instead (someone typed in it meanwhile), it is the routing target, so a
-        go-to-tab-by-id back to its previous tab restores it before retrying.
+        and polls list-tabs for the outcome. If a pre-existing client was
+        pulled onto the target tab instead (someone typed in it meanwhile, so
+        it was the routing target), a go-to-tab-by-id back to its previous tab
+        restores it before retrying. Clients that moved anywhere else did so
+        on their user's own initiative and are left alone.
         Gives up after _DIRECT_ATTEMPTS attempts, if the client exits, or on
         any error; it only logs at WARNING or below, because ERROR goes to
         stderr, which is the terminal proxy has in raw mode.
@@ -405,7 +430,7 @@ class ZellijBackend(MuxBackend):
             gate: Set on return, releasing proxy's held terminal data.
         """
         try:
-            new_id = self._wait_for_new_client(session_group, known)
+            new_id = self._wait_for_new_client(session_group, known, alive=client.is_alive)
             if new_id is None:
                 _LOGGER.warning("zellij client did not attach; not directing it to tab %s", tab_id)
                 return
@@ -432,7 +457,8 @@ class ZellijBackend(MuxBackend):
 
         Returns:
             True once the new client is on tab_id; False if a pre-existing
-            client moved instead (it has been sent back) or the poll timed out.
+            client was pulled onto tab_id instead (it has been sent back) or
+            the poll timed out.
         """
         deadline = time.monotonic() + _DIRECT_CONFIRM_TIMEOUT
         while True:
@@ -440,7 +466,7 @@ class ZellijBackend(MuxBackend):
             if tabs.get(new_id) == tab_id:
                 return True
             for cid, tab in tabs.items():
-                if cid != new_id and cid in before and tab != before[cid]:
+                if cid != new_id and cid in before and tab == tab_id and before[cid] != tab_id:
                     self._action(session_group, "go-to-tab-by-id", str(before[cid]))
                     return False
             if time.monotonic() >= deadline:

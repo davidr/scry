@@ -492,8 +492,12 @@ def do_table_loop():
         window_to_attach, display_error_message = process_command(command, windows, config["session_group"], console)
 
         if window_to_attach:
-            update_window_history(window_to_attach)
-            backend.attach_window(window_to_attach, config["session_group"])
+            try:
+                backend.attach_window(window_to_attach, config["session_group"])
+            except RuntimeError as e:
+                display_error_message = str(e)
+            else:
+                update_window_history(window_to_attach)
 
 
 def format_window_name(window_name: str, maxlen: int) -> str:
