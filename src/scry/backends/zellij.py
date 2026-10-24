@@ -3,6 +3,7 @@
 
 import json
 import logging
+import shutil
 import subprocess
 import threading
 import time
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import ContextManager, Dict, Iterator, List, Optional, Set
 
 from scry.backends.base import MuxBackend
-from scry.backends.pty_client import PtyClient
+from scry.backends.pty_client import PtyClient, proxy
 from scry.bin_utils import find_bin_in_path
 
 _NO_SESSION_MARKERS = (
@@ -22,11 +23,22 @@ _NO_SESSION_MARKERS = (
 """ tuple: stderr fragments that mean "no session/server yet", not a real error
 """
 
-_ATTACH_REFOCUS_DELAYS = (0.4, 1.2)
-""" tuple: sequential sleep durations between go-to-tab-name re-fires after
-launching attach (so fires land at ~0.4s and ~1.6s elapsed); remote focus
-actions no-op with zero clients, so the first client can only be directed
-after it has connected
+DEFAULT_WAKE_KEYS = "\x07\x07"
+""" str: default zellij_wake_keys — Ctrl-g twice (lock, unlock) under zellij's stock
+keybindings; a net no-op key press sequence that makes a client the target of
+remote actions
+"""
+
+_WAKE_KEY_INTERVAL = 0.05
+""" float: seconds between wake key presses (each key is a separate write)
+"""
+
+_DIRECT_ATTEMPTS = 3
+""" int: wake + go-to-tab-by-id attempts before giving up on directing a new client
+"""
+
+_DIRECT_CONFIRM_TIMEOUT = 1.0
+""" float: seconds to poll list-tabs for the outcome of one direction attempt
 """
 
 _CLIENT_POLL_INTERVAL = 0.05
@@ -106,19 +118,30 @@ class ZellijCmd(object):
 
 
 class ZellijBackend(MuxBackend):
-    """MuxBackend implementation for zellij.
+    """MuxBackend implementation for zellij (0.45.1 or later).
 
     The session_group maps to a single zellij session; tabs are windows and
-    the tab name doubles as the window_id (zellij 0.44 cannot enumerate
-    stable tab IDs). All clients attach to the same session, relying on
-    zellij's default multiplayer behavior for independent per-client focus.
-    Per-tab attached-client counts are unavailable: window_active_clients is
-    always "0" (no '#' indicator under zellij).
+    the stable tab ID (as a string) is the window_id, so renames keep a
+    window's identity. All clients attach to the same session, relying on
+    zellij's multiplayer behavior for independent per-client focus;
+    window_active_clients counts the clients viewing each tab.
+
+    zellij cannot target a client with remote actions: they go to the client
+    that most recently received key input. Attach therefore runs the new
+    client on a scry-owned pty, presses the configured wake keys in it so it
+    becomes that target, and only then sends go-to-tab-by-id (see _attach).
+    Creating tabs uses new-tab --no-focus, which moves no client.
     """
 
-    def __init__(self):
+    def __init__(self, wake_keys: str = DEFAULT_WAKE_KEYS):
+        """
+        Args:
+            wake_keys: Key presses zellij consumes as a net no-op under the
+                user's keybindings; each character is written as one key press.
+        """
         self._bin = find_bin_in_path("zellij")
         self._headless_depth = 0
+        self._wake_keys = wake_keys
 
     def _action(self, session_group: str, *action_args: str) -> ZellijCmd:
         return ZellijCmd(self._bin, ["--session", session_group, "action", *action_args])
@@ -296,30 +319,133 @@ class ZellijBackend(MuxBackend):
         if tabs[window_id] != new_name:
             raise RuntimeError(f"rename of window {window_id} to {new_name} did not take effect")
 
-    def _refocus_tab(self, window_id: str, session_group: str) -> None:
-        """Re-fire go-to-tab-name after the attaching client has had time to connect.
-
-        Stops on the first failure (e.g. the client detached again); directing
-        focus is best-effort by then.
-        """
-        for delay in _ATTACH_REFOCUS_DELAYS:
-            time.sleep(delay)
-            try:
-                self._action(session_group, "go-to-tab-name", window_id)
-            except RuntimeError:
-                return
-
     def attach_window(self, window_id: str, session_group: str) -> None:
-        """Focus the tab, then attach this client to the session (blocks until detach).
+        """Attach this terminal to the tab with this tab ID; blocks until detach.
 
-        The pre-focus directs the new client when other clients are already
-        attached (and, as a zellij 0.44 limitation, also pulls the session's
-        first client to this tab); with zero clients it is a no-op, so a
-        daemon thread re-fires the focus action once this client has connected.
+        Only this terminal's client lands on the tab; see _attach.
         """
-        self._action(session_group, "go-to-tab-name", window_id)
-        threading.Thread(target=self._refocus_tab, args=(window_id, session_group), daemon=True).start()
-        ZellijCmd(self._bin, ["attach", session_group], capture=False)
+        self._attach(window_id, session_group)
+
+    def _attach(
+        self,
+        window_id: str,
+        session_group: str,
+        stdin_fd: int = 0,
+        stdout_fd: int = 1,
+        hold_timeout: float = 2.0,
+    ) -> None:
+        """Attach a new client on a scry-owned pty, direct it to the tab, and proxy to it.
+
+        The terminal's output and input are held (by proxy) until a director
+        thread has moved the new client to the tab, hiding the frame of the
+        tab it first lands on. Returns when the client exits (the user
+        detaches) or stdin reaches EOF, after the director thread finishes.
+
+        Args:
+            window_id: The target tab ID (str).
+            session_group: The zellij session.
+            stdin_fd: Terminal input fd.
+            stdout_fd: Terminal output fd.
+            hold_timeout: Seconds after which held terminal data is released
+                even if direction has not finished.
+
+        Raises:
+            RuntimeError: If the session's clients or tabs cannot be listed.
+        """
+        tab_id = int(window_id)
+        known = set(self._list_clients(session_group))
+        before = self._client_tabs(session_group)
+        size = shutil.get_terminal_size()
+        client = PtyClient(
+            [self._bin, "attach", session_group, "options", "--on-force-close", "detach"],
+            size.lines,
+            size.columns,
+        )
+        gate = threading.Event()
+        director = threading.Thread(
+            target=self._direct_client,
+            args=(session_group, tab_id, client, known, before, gate),
+            name="zellij-direct-client",
+            daemon=True,
+        )
+        director.start()
+        try:
+            proxy(client, gate, hold_timeout, stdin_fd, stdout_fd)
+        finally:
+            # proxy has terminated the client, so the director's next write or
+            # liveness check stops it; wait so no action is sent after return.
+            director.join()
+
+    def _direct_client(
+        self,
+        session_group: str,
+        tab_id: int,
+        client: PtyClient,
+        known: Set[str],
+        before: Dict[str, int],
+        gate: threading.Event,
+    ) -> None:
+        """Move the newly attached client (and no other) to tab_id; always set gate.
+
+        Waits for the new client to appear, presses the wake keys in it (making
+        it the routing target for remote actions), then sends go-to-tab-by-id
+        and polls list-tabs for the outcome. If a pre-existing client moved
+        instead (someone typed in it meanwhile), it is the routing target, so a
+        go-to-tab-by-id back to its previous tab restores it before retrying.
+        Gives up after _DIRECT_ATTEMPTS attempts, if the client exits, or on
+        any error; it only logs at WARNING or below, because ERROR goes to
+        stderr, which is the terminal proxy has in raw mode.
+
+        Args:
+            session_group: The zellij session.
+            tab_id: The tab to move the new client to.
+            client: The new client's PtyClient.
+            known: Client IDs attached before the new client.
+            before: Each pre-existing client's tab_id before the attach.
+            gate: Set on return, releasing proxy's held terminal data.
+        """
+        try:
+            new_id = self._wait_for_new_client(session_group, known)
+            if new_id is None:
+                _LOGGER.warning("zellij client did not attach; not directing it to tab %s", tab_id)
+                return
+            for _ in range(_DIRECT_ATTEMPTS):
+                for key in self._wake_keys:
+                    client.write(key.encode())
+                    time.sleep(_WAKE_KEY_INTERVAL)
+                if not client.is_alive():
+                    return
+                self._action(session_group, "go-to-tab-by-id", str(tab_id))
+                if self._confirm_direction(session_group, tab_id, new_id, before):
+                    return
+            _LOGGER.warning("could not direct zellij client %s to tab %s", new_id, tab_id)
+        except OSError as e:
+            # The client exited (pty closed) mid-direction.
+            _LOGGER.debug("stopped directing zellij client to tab %s: %s", tab_id, e)
+        except Exception:  # noqa: BLE001 -- a traceback here would land on the raw-mode terminal
+            _LOGGER.warning("failed directing zellij client to tab %s", tab_id, exc_info=True)
+        finally:
+            gate.set()
+
+    def _confirm_direction(self, session_group: str, tab_id: int, new_id: str, before: Dict[str, int]) -> bool:
+        """Poll for the outcome of one go-to-tab-by-id aimed at the new client.
+
+        Returns:
+            True once the new client is on tab_id; False if a pre-existing
+            client moved instead (it has been sent back) or the poll timed out.
+        """
+        deadline = time.monotonic() + _DIRECT_CONFIRM_TIMEOUT
+        while True:
+            tabs = self._client_tabs(session_group)
+            if tabs.get(new_id) == tab_id:
+                return True
+            for cid, tab in tabs.items():
+                if cid != new_id and cid in before and tab != before[cid]:
+                    self._action(session_group, "go-to-tab-by-id", str(before[cid]))
+                    return False
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_CLIENT_POLL_INTERVAL)
 
     def ensure_session_group(self, session_group: str) -> None:
         """Create the session, detached, if it does not already exist."""

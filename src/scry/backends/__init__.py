@@ -11,7 +11,8 @@ def get_backend(cfg: Dict) -> MuxBackend:
 
     Args:
         cfg: The scry config dict; the "backend" key selects the backend
-            (missing key defaults to tmux).
+            (missing key defaults to tmux); "zellij_wake_keys" is passed to
+            the zellij backend.
 
     Returns:
         MuxBackend: The instantiated backend.
@@ -27,8 +28,8 @@ def get_backend(cfg: Dict) -> MuxBackend:
 
         return TmuxBackend()
     if backend_name == "zellij":
-        from scry.backends.zellij import ZellijBackend
+        from scry.backends.zellij import DEFAULT_WAKE_KEYS, ZellijBackend
 
-        return ZellijBackend()
+        return ZellijBackend(wake_keys=cfg.get("zellij_wake_keys", DEFAULT_WAKE_KEYS))
 
     raise ValueError(f"unknown backend {backend_name!r}: expected 'tmux' or 'zellij'")

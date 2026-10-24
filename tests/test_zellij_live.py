@@ -10,6 +10,7 @@ import itertools
 import os
 import shutil
 import subprocess
+import threading
 import time
 from unittest.mock import patch
 
@@ -133,3 +134,49 @@ def test_live_rename(live):
     names = _names(live)
     assert "x2" in names
     assert "x" not in names
+
+
+def _move(live, client, client_id, tab_id):
+    """Make client the routing target, send it to tab_id, and wait until it is there."""
+    client.write(_LOCK_TOGGLE_TWICE)
+    time.sleep(0.1)
+    live.backend._action(live.name, "go-to-tab-by-id", str(tab_id))
+    assert _poll(lambda: live.backend._client_tabs(live.name).get(client_id) == tab_id)
+
+
+def test_live_attach_moves_only_new_client(live):
+    """Attaching to tab c lands the new client on c; clients on a and b stay put."""
+    live.backend.ensure_session_group(live.name)
+    client_a, id_a = live.host_client()
+    client_b, id_b = live.host_client()
+    for name in ("a", "b", "c"):
+        live.backend.create_detached_window(name, live.name)
+    tab = {w["window_name"]: int(w["window_id"]) for w in live.backend.list_windows(live.name)}
+    _move(live, client_a, id_a, tab["a"])
+    _move(live, client_b, id_b, tab["b"])
+    client_a.write(_LOCK_TOGGLE_TWICE)  # A is now the routing target: the worst case
+    time.sleep(0.1)
+
+    in_r, in_w = os.pipe()
+    out_r, out_w = os.pipe()
+    drain = threading.Thread(target=lambda: [None for _ in iter(lambda: os.read(out_r, 65536), b"")], daemon=True)
+    drain.start()
+    attach = threading.Thread(target=live.backend._attach, args=(str(tab["c"]), live.name, in_r, out_w), daemon=True)
+    try:
+        attach.start()
+        new = _poll(lambda: set(live.backend._list_clients(live.name)) - {id_a, id_b}, timeout=3.0)
+        assert new
+        id_new = new.pop()
+        expected = {id_a: tab["a"], id_b: tab["b"], id_new: tab["c"]}
+        assert _poll(lambda: live.backend._client_tabs(live.name) == expected, timeout=3.0), live.backend._client_tabs(
+            live.name
+        )
+    finally:
+        os.close(in_w)
+        attach.join(3.0)
+        alive = attach.is_alive()
+        for fd in (in_r, out_w):
+            os.close(fd)
+        drain.join(1.0)
+        os.close(out_r)
+    assert not alive, "_attach did not return after stdin EOF"

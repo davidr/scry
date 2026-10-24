@@ -1,6 +1,7 @@
 """Tests for the zellij backend."""
 
 import json
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -314,30 +315,92 @@ def test_rename_window_not_applied_raises(mock_run, backend):
         backend.rename_window("4", "newname", "main")
 
 
-@patch("scry.backends.zellij.threading.Thread")
-@patch("scry.backends.zellij.subprocess.run")
-def test_attach_window_focuses_attaches_and_spawns_refocus(mock_run, mock_thread, backend):
-    """Pre-focus (captured), blocking attach (uncaptured), daemon refocus thread started."""
-    mock_run.return_value = _completed()
-    backend.attach_window("mytab", "main")
-    calls = mock_run.call_args_list
-    assert calls[0][0][0] == ["/home/user/bin/zellij", "--session", "main", "action", "go-to-tab-name", "mytab"]
-    assert calls[1][0][0] == ["/home/user/bin/zellij", "attach", "main"]
-    assert calls[1][1]["stdout"] is None  # attach must own the tty
-    assert mock_thread.call_args[1]["daemon"] is True
-    mock_thread.return_value.start.assert_called_once()
+GO_TO = ["/home/user/bin/zellij", "--session", "main", "action", "go-to-tab-by-id"]
 
 
-@patch("scry.backends.zellij.time.sleep")
-@patch("scry.backends.zellij.subprocess.run")
-def test_refocus_tab_fires_per_delay_and_stops_on_error(mock_run, mock_sleep, backend):
-    """One go-to-tab-name per configured delay; first failure ends the loop quietly."""
-    mock_run.return_value = _completed()
-    backend._refocus_tab("mytab", "main")
-    assert mock_run.call_count == 2
-    assert all(c[0][0][-2:] == ["go-to-tab-name", "mytab"] for c in mock_run.call_args_list)
+@patch("scry.backends.zellij.proxy")
+@patch("scry.backends.zellij.PtyClient")
+def test_attach_spawns_client_with_detach_on_force_close(mock_pty, mock_proxy, backend):
+    """The attach runs on a scry-owned pty and is proxied; the director thread is started."""
+    with (
+        patch.object(backend, "_list_clients", return_value=["1"]),
+        patch.object(backend, "_client_tabs", return_value={"1": 0}),
+        patch.object(backend, "_direct_client") as mock_direct,
+    ):
+        backend.attach_window("5", "main")
+    argv = mock_pty.call_args[0][0]
+    assert argv == ["/home/user/bin/zellij", "attach", "main", "options", "--on-force-close", "detach"]
+    assert mock_proxy.call_args[0][0] is mock_pty.return_value
+    args = mock_direct.call_args[0]
+    assert args[:5] == ("main", 5, mock_pty.return_value, {"1"}, {"1": 0})
 
-    mock_run.reset_mock()
-    mock_run.return_value = _completed(returncode=1, stderr=b"session gone")
-    backend._refocus_tab("mytab", "main")  # must not raise
-    assert mock_run.call_count == 1
+
+def _direct(backend, client, polls, before=None, new_id="3"):
+    """Run _direct_client with zellij calls mocked; return (gate, order of writes/runs)."""
+    order = MagicMock()
+    order.attach_mock(client.write, "write")
+    gate = threading.Event()
+    with (
+        patch.object(backend, "_wait_for_new_client", return_value=new_id),
+        patch.object(backend, "_client_tabs", side_effect=polls),
+        patch("scry.backends.zellij.subprocess.run", return_value=_completed()) as mock_run,
+        patch("scry.backends.zellij.time.sleep"),
+    ):
+        order.attach_mock(mock_run, "run")
+        backend._direct_client("main", 5, client, {"1"}, before or {}, gate)
+    return gate, [(c[0], c.args[0]) for c in order.mock_calls]
+
+
+def test_direct_client_wakes_then_focuses(backend):
+    client = MagicMock()
+    gate, calls = _direct(backend, client, [{"3": 5}])
+    assert calls == [("write", b"\x07"), ("write", b"\x07"), ("run", GO_TO + ["5"])]
+    assert gate.is_set()
+
+
+def test_direct_client_restores_displaced_client(backend):
+    """Another client moved instead: put it back, then re-wake and retry."""
+    client = MagicMock()
+    polls = [{"1": 5, "3": 2}, {"1": 2, "3": 5}]
+    gate, calls = _direct(backend, client, polls, before={"1": 2})
+    assert calls == [
+        ("write", b"\x07"),
+        ("write", b"\x07"),
+        ("run", GO_TO + ["5"]),
+        ("run", GO_TO + ["2"]),
+        ("write", b"\x07"),
+        ("write", b"\x07"),
+        ("run", GO_TO + ["5"]),
+    ]
+    assert gate.is_set()
+
+
+def test_direct_client_custom_wake_keys():
+    with patch("scry.backends.zellij.find_bin_in_path", return_value="/home/user/bin/zellij"):
+        backend = ZellijBackend(wake_keys="\x01\x1b")
+    client = MagicMock()
+    _, calls = _direct(backend, client, [{"3": 5}])
+    assert [c for c in calls if c[0] == "write"] == [("write", b"\x01"), ("write", b"\x1b")]
+
+
+def test_attach_returns_when_client_never_appears(backend):
+    client = MagicMock()
+    gate, calls = _direct(backend, client, [], new_id=None)
+    assert calls == []
+    assert gate.is_set()
+
+
+def test_direct_client_stops_when_client_closes(backend):
+    """A client that exits mid-direction (write raises EBADF) ends direction quietly."""
+    client = MagicMock()
+    client.write.side_effect = OSError(9, "pty client is closed")
+    gate, calls = _direct(backend, client, [])
+    assert [c for c in calls if c[0] == "run"] == []
+    assert gate.is_set()
+
+
+def test_direct_client_stops_on_zellij_error(backend):
+    """A zellij failure (e.g. session gone) ends direction quietly with the gate set."""
+    client = MagicMock()
+    gate, _ = _direct(backend, client, RuntimeError("session gone"))
+    assert gate.is_set()

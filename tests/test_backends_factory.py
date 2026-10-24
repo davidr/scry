@@ -61,3 +61,16 @@ def test_get_backend_zellij():
     with patch("scry.backends.zellij.find_bin_in_path", return_value="/home/user/bin/zellij"):
         backend = get_backend({"backend": "zellij"})
     assert isinstance(backend, ZellijBackend)
+
+
+def test_get_backend_passes_wake_keys():
+    with patch("scry.backends.zellij.find_bin_in_path", return_value="/home/user/bin/zellij"):
+        backend = get_backend({"backend": "zellij", "zellij_wake_keys": "\x01\x1b"})
+    assert backend._wake_keys == "\x01\x1b"
+
+
+def test_config_zellij_wake_keys_default():
+    with patch.object(sys, "argv", ["scry"]):
+        with patch("scry.scry.os.path.exists", return_value=False):
+            cfg = parse_args_and_configure()
+    assert cfg["zellij_wake_keys"] == "\x07\x07"

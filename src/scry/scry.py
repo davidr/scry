@@ -50,6 +50,7 @@ default_config = {
     "dump_file": os.path.join(os.path.expanduser("~"), ".scry_windows.yml"),  # Default dump file path
     "hide_prefixes": False,  # Collapse shared "prefix+NN" prefixes in the display
     "backend": "tmux",  # Terminal multiplexer backend: "tmux" or "zellij"
+    "zellij_wake_keys": "\x07\x07",  # No-op key presses that make a new zellij client the action target
 }
 
 OPTION_HELP = {
