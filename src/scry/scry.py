@@ -422,16 +422,19 @@ def load_windows_from_yaml(file_path: str, session_group: str) -> None:
             current_windows = backend.list_windows(session_group)
             current_window_names = {window["window_name"] for window in current_windows}
 
-            for window_name in window_names_to_load:
-                if window_name not in current_window_names:
-                    _LOGGER.info("Creating missing window: %s", window_name)
-                    try:
-                        backend.create_detached_window(window_name, session_group)
-                    except RuntimeError as e:
-                        _LOGGER.error("Error creating window %s: %s", window_name, e)
-                else:
-                    _LOGGER.info("Window %s already exists, skipping.", window_name)
+            with backend.creating_windows(session_group):
+                for window_name in window_names_to_load:
+                    if window_name not in current_window_names:
+                        _LOGGER.info("Creating missing window: %s", window_name)
+                        try:
+                            backend.create_detached_window(window_name, session_group)
+                        except RuntimeError as e:
+                            _LOGGER.error("Error creating window %s: %s", window_name, e)
+                    else:
+                        _LOGGER.info("Window %s already exists, skipping.", window_name)
 
+    except RuntimeError as e:
+        _LOGGER.error("Error loading windows into %s: %s", session_group, e)
     except FileNotFoundError:
         _LOGGER.error("Dump file not found: %s", file_path)
     except yaml.YAMLError as e:

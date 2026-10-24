@@ -1,9 +1,11 @@
 """Tests for dump_windows_to_yaml() and load_windows_from_yaml()."""
 
-from unittest.mock import patch
+import json
+from unittest.mock import MagicMock, patch
 
 import yaml
 
+from scry.backends.zellij import ZellijBackend
 from scry.scry import dump_windows_to_yaml, load_windows_from_yaml
 
 
@@ -69,4 +71,57 @@ def test_load_invalid_yaml_structure(tmp_path):
 
     # Wrong type for active_windows
     dump_file.write_text("active_windows: not_a_list\n")
+    load_windows_from_yaml(str(dump_file), "main")
+
+
+def test_load_uses_single_headless_client(tmp_path):
+    """Under zellij with zero clients, loading 3 windows spawns one helper client total."""
+    dump_file = tmp_path / "windows.yml"
+    dump_file.write_text("active_windows:\n  - alpha\n  - beta\n  - gamma\n")
+    tabs = [{"tab_id": 0, "name": "Tab #1", "other_focused_clients": []}]
+    helper = {"attached": False}
+
+    def fake_run(argv, **kwargs):
+        args = argv[1:]
+        out = b""
+        if args[0] == "list-sessions":
+            out = b"main [Created 1m ago]\n"
+        elif args[-2:] == ["list-tabs", "-j"]:
+            out = json.dumps(tabs).encode()
+        elif args[-1] == "list-clients":
+            out = b"CLIENT_ID ZELLIJ_PANE_ID RUNNING_COMMAND\n"
+            if helper["attached"]:
+                out += b"9 terminal_0 bash\n"
+        elif "new-tab" in args:
+            tabs.append({"tab_id": len(tabs), "name": args[-1], "other_focused_clients": []})
+            out = f"{len(tabs) - 1}\n".encode()
+        return MagicMock(returncode=0, stdout=out, stderr=b"")
+
+    def fake_pty(*args, **kwargs):
+        helper["attached"] = True
+        return MagicMock()
+
+    with patch("scry.backends.zellij.find_bin_in_path", return_value="/home/user/bin/zellij"):
+        zellij = ZellijBackend()
+    with (
+        patch("scry.scry.backend", zellij),
+        patch("scry.backends.zellij.subprocess.run", side_effect=fake_run) as mock_run,
+        patch("scry.backends.zellij.PtyClient", side_effect=fake_pty) as mock_pty,
+    ):
+        load_windows_from_yaml(str(dump_file), "main")
+    assert mock_pty.call_count == 1
+    new_tabs = [c.args[0] for c in mock_run.call_args_list if "new-tab" in c.args[0]]
+    assert len(new_tabs) == 3
+    assert [t["name"] for t in tabs] == ["Tab #1", "alpha", "beta", "gamma"]
+
+
+@patch("scry.scry.backend.creating_windows")
+@patch("scry.scry.backend.list_windows")
+def test_load_logs_batch_setup_failure(mock_list, mock_creating, tmp_path):
+    """A failure setting up the creation batch (e.g. zellij helper) is logged, not raised."""
+    dump_file = tmp_path / "windows.yml"
+    dump_file.write_text("active_windows:\n  - alpha\n")
+    mock_list.return_value = []
+    mock_creating.return_value.__enter__.side_effect = RuntimeError("zellij helper client did not attach")
+    # Should not raise
     load_windows_from_yaml(str(dump_file), "main")

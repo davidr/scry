@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """Abstract interface that every multiplexer backend implements."""
 
+import contextlib
 from abc import ABC, abstractmethod
-from typing import Dict, List
+from typing import ContextManager, Dict, List
 
 
 class MuxBackend(ABC):
@@ -43,6 +44,14 @@ class MuxBackend(ABC):
     @abstractmethod
     def ensure_session_group(self, session_group: str) -> None:
         """Create the session group, detached, if it does not already exist."""
+
+    def creating_windows(self, session_group: str) -> ContextManager[None]:
+        """Return a context manager to wrap a batch of create_detached_window calls.
+
+        Backends that need per-batch setup (e.g. zellij's helper client) override
+        this; the default does nothing.
+        """
+        return contextlib.nullcontext()
 
     def window_exists(self, window_name: str, session_group: str) -> bool:
         """Check whether a window with this name exists in the group."""

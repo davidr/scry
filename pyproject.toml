@@ -28,6 +28,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "live: drives a real zellij binary (opt in with SCRY_LIVE_ZELLIJ=1)",
+]
 
 [tool.ruff]
 line-length = 120

@@ -6,10 +6,12 @@ import logging
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List
+from typing import ContextManager, Dict, Iterator, List, Optional, Set
 
 from scry.backends.base import MuxBackend
+from scry.backends.pty_client import PtyClient
 from scry.bin_utils import find_bin_in_path
 
 _NO_SESSION_MARKERS = (
@@ -25,6 +27,15 @@ _ATTACH_REFOCUS_DELAYS = (0.4, 1.2)
 launching attach (so fires land at ~0.4s and ~1.6s elapsed); remote focus
 actions no-op with zero clients, so the first client can only be directed
 after it has connected
+"""
+
+_CLIENT_POLL_INTERVAL = 0.05
+""" float: seconds between list-clients polls while waiting for a client to attach
+"""
+
+_HELPER_ROWS, _HELPER_COLS = 24, 80
+""" int, int: pty size of the headless helper client; any nonzero size avoids
+zellij's 0x0 tab (zellij-org/zellij#5594)
 """
 
 _LOGGER = logging.getLogger(__name__)
@@ -107,6 +118,7 @@ class ZellijBackend(MuxBackend):
 
     def __init__(self):
         self._bin = find_bin_in_path("zellij")
+        self._headless_depth = 0
 
     def _action(self, session_group: str, *action_args: str) -> ZellijCmd:
         return ZellijCmd(self._bin, ["--session", session_group, "action", *action_args])
@@ -132,6 +144,75 @@ class ZellijBackend(MuxBackend):
             for client in tab.get("other_focused_clients", []):
                 mapping[str(client)] = tab["tab_id"]
         return mapping
+
+    def _wait_for_new_client(self, session_group: str, known: Set[str], timeout: float = 3.0) -> Optional[str]:
+        """Poll list-clients until a client not in known appears.
+
+        Args:
+            session_group: The zellij session.
+            known: Client IDs to ignore (those attached before the new client).
+            timeout: Seconds to keep polling.
+
+        Returns:
+            The first new client ID, or None if none appeared within timeout.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            new = [c for c in self._list_clients(session_group) if c not in known]
+            if new:
+                return new[0]
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(_CLIENT_POLL_INTERVAL)
+
+    @contextmanager
+    def _headless_client(self, session_group: str) -> Iterator[None]:
+        """Guarantee at least one client is attached for the duration of the block.
+
+        A tab created while zero clients are attached is 0x0, buffers output
+        without bound, and is discarded when the first client attaches
+        (zellij-org/zellij#5594). If no client is attached, a helper client is
+        attached on a scry-owned pty (draining its output) and terminated on
+        exit; --on-force-close detach makes that terminate a detach, never a
+        session quit. If clients already exist, nothing is spawned. Re-entrant:
+        nested use while a helper block is active spawns nothing.
+
+        Raises:
+            RuntimeError: If the helper does not appear in list-clients in time.
+        """
+        if self._headless_depth > 0:
+            self._headless_depth += 1
+            try:
+                yield
+            finally:
+                self._headless_depth -= 1
+            return
+
+        known = set(self._list_clients(session_group))
+        helper: Optional[PtyClient] = None
+        if not known:
+            helper = PtyClient(
+                [self._bin, "attach", session_group, "options", "--on-force-close", "detach"],
+                _HELPER_ROWS,
+                _HELPER_COLS,
+            )
+        try:
+            if helper is not None:
+                helper.start_draining()
+                if self._wait_for_new_client(session_group, known) is None:
+                    raise RuntimeError("zellij helper client did not attach")
+            self._headless_depth += 1
+            try:
+                yield
+            finally:
+                self._headless_depth -= 1
+        finally:
+            if helper is not None:
+                helper.terminate()
+
+    def creating_windows(self, session_group: str) -> ContextManager[None]:
+        """Keep one helper client attached (if none is) across a batch of creates."""
+        return self._headless_client(session_group)
 
     def list_windows(self, session_group: str) -> List[Dict[str, str]]:
         """Return the session's tabs as windows sorted by name; [] if no session."""
@@ -181,7 +262,10 @@ class ZellijBackend(MuxBackend):
         return sorted(sessions, key=lambda k: k["session_name"])
 
     def create_detached_window(self, window_name: str, session_group: str) -> None:
-        """Create a new tab in the session.
+        """Create a new tab in the session without moving any client's focus.
+
+        The tab is created inside _headless_client so that at least one client
+        is attached (avoiding zellij-org/zellij#5594).
 
         Raises:
             RuntimeError: If the session does not exist or a tab with this
@@ -194,7 +278,8 @@ class ZellijBackend(MuxBackend):
         if self.window_exists(window_name, session_group):
             raise RuntimeError(f"Window {window_name} already exists in session group {session_group}")
 
-        self._action(session_group, "new-tab", "--name", window_name)
+        with self._headless_client(session_group):
+            self._action(session_group, "new-tab", "--no-focus", "--name", window_name)
 
     def rename_window(self, window_id: str, new_name: str, session_group: str) -> None:
         """Rename the tab with this tab ID, then verify the rename took effect.

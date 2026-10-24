@@ -186,16 +186,93 @@ def test_ensure_session_group_noop_when_exists(mock_run, backend):
     mock_run.assert_not_called()
 
 
+@patch("scry.backends.zellij.PtyClient")
 @patch("scry.backends.zellij.subprocess.run")
-def test_create_window_success(mock_run, backend):
+def test_create_window_no_focus_argv(mock_run, mock_pty, backend):
+    """With clients attached, no helper is spawned and the tab is created unfocused."""
     mock_run.return_value = _completed(stdout=b"2\n")
     with (
         patch.object(backend, "session_exists", return_value=True),
         patch.object(backend, "window_exists", return_value=False),
+        patch.object(backend, "_list_clients", return_value=["1"]),
     ):
         backend.create_detached_window("newwin", "main")
+    mock_pty.assert_not_called()
     argv = mock_run.call_args[0][0]
-    assert argv == ["/home/user/bin/zellij", "--session", "main", "action", "new-tab", "--name", "newwin"]
+    assert argv == ["/home/user/bin/zellij", "--session", "main", "action", "new-tab", "--no-focus", "--name", "newwin"]
+
+
+@patch("scry.backends.zellij.PtyClient")
+@patch("scry.backends.zellij.subprocess.run")
+def test_create_window_zero_clients_spawns_headless(mock_run, mock_pty, backend):
+    """With zero clients, a headless helper attaches for the new-tab and is terminated after."""
+    order = MagicMock()
+    order.attach_mock(mock_run, "run")
+    order.attach_mock(mock_pty.return_value.terminate, "terminate")
+    mock_run.return_value = _completed(stdout=b"2\n")
+    clients = iter([[], ["9"]])
+    with (
+        patch.object(backend, "session_exists", return_value=True),
+        patch.object(backend, "window_exists", return_value=False),
+        patch.object(backend, "_list_clients", side_effect=lambda s: next(clients)),
+    ):
+        backend.create_detached_window("newwin", "main")
+    mock_pty.assert_called_once_with(
+        ["/home/user/bin/zellij", "attach", "main", "options", "--on-force-close", "detach"], 24, 80
+    )
+    mock_pty.return_value.start_draining.assert_called_once_with()
+    names = [c[0] for c in order.mock_calls]
+    assert names == ["run", "terminate"]
+    assert order.mock_calls[0].args[0][-4:] == ["new-tab", "--no-focus", "--name", "newwin"]
+
+
+@patch("scry.backends.zellij.PtyClient")
+@patch("scry.backends.zellij.subprocess.run")
+def test_headless_client_timeout_raises_and_cleans_up(mock_run, mock_pty, backend):
+    """A helper that never shows up in list-clients is terminated and the create fails."""
+    clock = [0.0]
+
+    def fake_sleep(seconds):
+        clock[0] += seconds
+
+    with (
+        patch.object(backend, "session_exists", return_value=True),
+        patch.object(backend, "window_exists", return_value=False),
+        patch.object(backend, "_list_clients", return_value=[]),
+        patch("scry.backends.zellij.time.sleep", side_effect=fake_sleep),
+        patch("scry.backends.zellij.time.monotonic", side_effect=lambda: clock[0]),
+    ):
+        with pytest.raises(RuntimeError, match="did not attach"):
+            backend.create_detached_window("newwin", "main")
+    mock_pty.return_value.terminate.assert_called_once_with()
+    mock_run.assert_not_called()
+
+
+def test_wait_for_new_client_returns_first_unknown(backend):
+    """Known client IDs are ignored; the first new one is returned."""
+    clients = iter([["1"], ["1", "7"]])
+    with (
+        patch.object(backend, "_list_clients", side_effect=lambda s: next(clients)),
+        patch("scry.backends.zellij.time.sleep"),
+    ):
+        assert backend._wait_for_new_client("main", {"1"}) == "7"
+
+
+@patch("scry.backends.zellij.PtyClient")
+def test_creating_windows_is_reentrant(mock_pty, backend):
+    """Nested headless-client use spawns one helper; no client listing while one is active."""
+    clients = iter([[], ["9"]])
+    with (
+        patch.object(backend, "_list_clients", side_effect=lambda s: next(clients)) as mock_list,
+        patch("scry.backends.zellij.time.sleep"),
+    ):
+        with backend.creating_windows("main"):
+            with backend._headless_client("main"):
+                pass
+            mock_pty.return_value.terminate.assert_not_called()
+    mock_pty.assert_called_once()
+    assert mock_list.call_count == 2
+    mock_pty.return_value.terminate.assert_called_once_with()
 
 
 def test_create_window_no_session(backend):
