@@ -184,6 +184,33 @@ def test_ptyclient_start_draining(spawn):
     client.terminate()
 
 
+def test_ptyclient_missing_command_exits_127(spawn):
+    """An unexecutable argv[0] is a clear failure (status 127 + message), not a hang."""
+    client = spawn(["/nonexistent/scry-test-cmd"])
+    output = _read_master_until_eof(client.master_fd)
+    assert client.wait() == 127
+    assert b"cannot execute /nonexistent/scry-test-cmd" in output
+
+
+def test_ptyclient_resize_after_terminate_raises(spawn):
+    """resize() on a closed client raises instead of touching a stale fd number."""
+    client = spawn(["sleep", "30"])
+    client.terminate()
+    with pytest.raises(OSError):
+        client.resize(10, 10)
+
+
+def test_ptyclient_start_draining_twice_starts_one_thread(spawn):
+    """A second start_draining() call does not start a second drain thread."""
+    client = spawn(["sleep", "30"])
+    client.start_draining()
+    client.start_draining()
+    names = [t.name for t in threading.enumerate() if t.name == f"pty-drain-{client.pid}"]
+    assert len(names) == 1
+    client.terminate()
+    assert not any(t.name == f"pty-drain-{client.pid}" for t in threading.enumerate())
+
+
 # --- proxy ---
 
 
@@ -298,3 +325,51 @@ def test_proxy_propagates_sigwinch(spawn, fds, pipes):
         timer.join()
     assert b"50 160" in _read_pipe_until(stdout_r, b"50 160", 1.0)
     assert signal.getsignal(signal.SIGWINCH) == handler_before
+
+
+def test_proxy_sizes_pty_to_terminal_at_start(spawn, fds, pipes):
+    """With no SIGWINCH at all, the pty is resized to stdin's terminal at startup."""
+    _stdin_r, _stdin_w, stdout_r, stdout_w = pipes
+    tty_master, tty_slave = fds(*os.openpty())
+    _set_winsize(tty_slave, 45, 140)
+    client = spawn(["sh", "-c", "sleep 0.3; stty size"])
+    gate = threading.Event()
+    gate.set()
+    proxy(client, gate, hold_timeout=2.0, stdin_fd=tty_slave, stdout_fd=stdout_w)
+    assert b"45 140" in _read_pipe_until(stdout_r, b"45 140", 1.0)
+
+
+def test_proxy_sigwinch_handler_never_raises(spawn, fds, pipes):
+    """A failing resize inside the SIGWINCH handler does not escape into proxy."""
+    _stdin_r, _stdin_w, stdout_r, stdout_w = pipes
+    tty_master, tty_slave = fds(*os.openpty())
+    client = spawn(["sh", "-c", "sleep 0.5; echo done"])
+    gate = threading.Event()
+    gate.set()
+    timer = threading.Timer(0.1, os.kill, args=(os.getpid(), signal.SIGWINCH))
+    with patch.object(client, "resize", side_effect=OSError(errno.EBADF, "closed")) as resize:
+        timer.start()
+        try:
+            proxy(client, gate, hold_timeout=2.0, stdin_fd=tty_slave, stdout_fd=stdout_w)
+        finally:
+            timer.cancel()
+            timer.join()
+    assert resize.call_count >= 2  # startup sizing + the signal
+    assert b"done" in _read_pipe_until(stdout_r, b"done", 1.0)
+
+
+def test_proxy_reaps_client_when_termios_restore_fails(spawn, fds, pipes):
+    """If restoring termios raises, the SIGWINCH handler is restored and the client reaped."""
+    _stdin_r, _stdin_w, _stdout_r, stdout_w = pipes
+    tty_master, tty_slave = fds(*os.openpty())
+    handler_before = signal.getsignal(signal.SIGWINCH)
+    client = spawn(["sh", "-c", "echo hi"])
+    gate = threading.Event()
+    gate.set()
+    with patch("scry.backends.pty_client.termios.tcsetattr", side_effect=termios.error(5, "EIO")):
+        with pytest.raises(termios.error):
+            proxy(client, gate, hold_timeout=2.0, stdin_fd=tty_slave, stdout_fd=stdout_w)
+    assert signal.getsignal(signal.SIGWINCH) == handler_before
+    assert not client.is_alive()
+    with pytest.raises(OSError):
+        client.write(b"x")

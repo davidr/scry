@@ -13,6 +13,7 @@ import select
 import signal
 import struct
 import subprocess
+import sys
 import termios
 import threading
 import time
@@ -28,13 +29,23 @@ _SELECT_TIMEOUT = 0.05
 """
 
 
-def _make_controlling_tty() -> None:
-    """Make stdin (the pty slave) the controlling terminal; runs in the child.
+_EXEC_FAILED = 127
+""" int: exit status of the child when argv[0] cannot be executed (shell convention)
+"""
 
-    Called via `preexec_fn` after `setsid()`, so that resizing the pty delivers
-    SIGWINCH to the child.
-    """
-    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+_TRAMPOLINE = (
+    "import fcntl, os, sys, termios\n"
+    "fcntl.ioctl(0, termios.TIOCSCTTY, 0)\n"
+    "try:\n"
+    "    os.execvp(sys.argv[1], sys.argv[1:])\n"
+    "except OSError as e:\n"
+    "    sys.stderr.write(f'scry: cannot execute {sys.argv[1]}: {e.strerror}\\r\\n')\n"
+    f"    sys.exit({_EXEC_FAILED})\n"
+)
+""" str: Python source run in the child (after setsid) to make the pty slave its
+controlling terminal, so that pty resizes deliver SIGWINCH, then exec argv. Used
+instead of `preexec_fn`, which is unsafe when other threads exist at fork time.
+"""
 
 
 def _read_or_eof(fd: int) -> bytes:
@@ -83,8 +94,12 @@ class PtyClient(object):
             rows: Initial pty height.
             cols: Initial pty width.
 
+        If argv[0] cannot be executed, the constructor still succeeds: the child
+        prints "scry: cannot execute ..." to the pty and exits with status 127, so
+        callers observe `wait() == 127` (and pty EOF), not an exception or a hang.
+
         Raises:
-            OSError: If the pty cannot be created or argv cannot be executed.
+            OSError: If the pty cannot be created or the Python trampoline cannot start.
         """
         self.master_fd, slave_fd = os.openpty()
         self._closed = False
@@ -92,14 +107,13 @@ class PtyClient(object):
         self._drain_stop = threading.Event()
         self._drain_thread: Optional[threading.Thread] = None
         try:
-            self.resize(rows, cols)
+            fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
             self._proc = subprocess.Popen(
-                argv,
+                [sys.executable, "-I", "-c", _TRAMPOLINE, *argv],
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
                 start_new_session=True,
-                preexec_fn=_make_controlling_tty,
             )
         except BaseException:
             os.close(self.master_fd)
@@ -129,7 +143,14 @@ class PtyClient(object):
         Args:
             rows: New height.
             cols: New width.
+
+        Raises:
+            OSError: If the client has been terminated (EBADF) or the ioctl fails.
         """
+        # No lock: this runs from proxy's SIGWINCH handler on the main thread, which
+        # may already hold self._lock inside write().
+        if self._closed:
+            raise OSError(errno.EBADF, "pty client is closed")
         fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
     def is_alive(self) -> bool:
@@ -169,7 +190,12 @@ class PtyClient(object):
                 os.close(self.master_fd)
 
     def start_draining(self) -> None:
-        """Read and discard the child's output in a daemon thread (headless clients)."""
+        """Read and discard the child's output in a daemon thread (headless clients).
+
+        Calling it again while a drain thread exists does nothing.
+        """
+        if self._drain_thread is not None:
+            return
         self._drain_thread = threading.Thread(target=self._drain, name=f"pty-drain-{self.pid}", daemon=True)
         self._drain_thread.start()
 
@@ -200,9 +226,10 @@ def proxy(
     Copies stdin to the pty and pty output to stdout. Until `gate` is set or
     `hold_timeout` elapses, both directions are buffered; on release the held output
     is flushed in one write, then the held input is forwarded. If stdin is a tty it is
-    put in raw mode and SIGWINCH resizes the pty to match it; both are restored on
-    every exit path. On stdin EOF the client is terminated. The client is terminated
-    (reaped, master closed) before returning or raising.
+    put in raw mode, the pty is resized to match it, and SIGWINCH keeps it matched.
+    On every exit path (child exit, stdin EOF, exception) the SIGWINCH handler and
+    termios settings are restored first, then the client is terminated (reaped,
+    master closed); each step runs even if an earlier one raises.
 
     Must run on the main thread when stdin_fd is a tty (it installs a signal handler).
     `client.write` may be called from other threads while this runs.
@@ -223,29 +250,37 @@ def proxy(
             saved_attrs = termios.tcgetattr(stdin_fd)
 
             def _on_winch(_signum, _frame):
-                rows, cols = struct.unpack("HHHH", fcntl.ioctl(stdin_fd, termios.TIOCGWINSZ, b"\0" * 8))[:2]
-                client.resize(rows, cols)
+                # Never raise: an exception here would surface wherever the main
+                # thread happens to be, possibly inside proxy's cleanup.
+                try:
+                    winsize = fcntl.ioctl(stdin_fd, termios.TIOCGWINSZ, b"\0" * 8)
+                    rows, cols = struct.unpack("HHHH", winsize)[:2]
+                    client.resize(rows, cols)
+                except OSError:
+                    pass
 
             prev_handler = signal.signal(signal.SIGWINCH, _on_winch)
             handler_installed = True
+            _on_winch(signal.SIGWINCH, None)
             tty.setraw(stdin_fd, termios.TCSADRAIN)
         _proxy_loop(client, gate, hold_timeout, stdin_fd, stdout_fd)
-    except BaseException:
-        client.terminate()
-        raise
     finally:
-        if handler_installed:
-            signal.signal(signal.SIGWINCH, prev_handler if prev_handler is not None else signal.SIG_DFL)
-        if saved_attrs is not None:
-            termios.tcsetattr(stdin_fd, termios.TCSADRAIN, saved_attrs)
-    client.terminate()
+        try:
+            if handler_installed:
+                signal.signal(signal.SIGWINCH, prev_handler if prev_handler is not None else signal.SIG_DFL)
+        finally:
+            try:
+                if saved_attrs is not None:
+                    termios.tcsetattr(stdin_fd, termios.TCSADRAIN, saved_attrs)
+            finally:
+                client.terminate()
 
 
 def _proxy_loop(client: PtyClient, gate: threading.Event, hold_timeout: float, stdin_fd: int, stdout_fd: int) -> None:
     """Copy bytes between the terminal and the client; see `proxy`.
 
     Returns when the pty reaches EOF (child side closed; all output drained and
-    flushed) or stdin reaches EOF (held output flushed, client terminated).
+    flushed) or stdin reaches EOF (held output flushed). `proxy` terminates the client.
     """
     master_fd = client.master_fd
     deadline = time.monotonic() + hold_timeout
@@ -277,7 +312,6 @@ def _proxy_loop(client: PtyClient, gate: threading.Event, hold_timeout: float, s
         if stdin_fd in readable:
             data = _read_or_eof(stdin_fd)
             if not data:
-                client.terminate()
                 break
             if held:
                 held_in += data
