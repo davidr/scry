@@ -26,7 +26,9 @@ Constraint: zellij **0.45.1** is the target. No zellij plugins.
    `ZELLIJ_PANE_ID` / `ZELLIJ` / `ZELLIJ_SESSION_NAME` env vars are ignored for routing.
    Focus events (`ESC [ I`), SGR mouse motion, empty bracketed paste, F20, and terminal
    resizes do **not** count as input. Ordinary key presses (Ctrl-g; Ctrl-a then Esc)
-   do, whether zellij consumes them or passes them to the pane.
+   do, whether zellij consumes them or passes them to the pane. (Rechecked for focus-in
+   and focus-out+in under both stock and tmux-style keybindings: never routes, never
+   reaches the pane.)
 2. **New-client landing.** A newly attached client lands on the tab of the routing
    target client (fact 1). With zero clients, pre-focusing (`go-to-tab-*`) is a no-op;
    the client lands where the last client left off.
@@ -47,9 +49,10 @@ Constraint: zellij **0.45.1** is the target. No zellij plugins.
    detach/attach.
 8. **`list-clients`** prints a whitespace table `CLIENT_ID ZELLIJ_PANE_ID RUNNING_COMMAND`
    (header line, then one row per client); no JSON flag.
-9. **Missing session error.** When other sessions exist but `S` doesn't, actions fail
-   with `Session 'S' not found. The following sessions are active: …` (current code
-   only recognizes `There is no active session!`).
+9. **Missing session error.** When other sessions exist but `S` doesn't, actions print
+   `Session 'S' not found. The following sessions are active: …` to stderr and **exit
+   0** with empty stdout (rechecked 2026-10-24 for `list-tabs -j`, `list-clients`,
+   `query-tab-names`). `ZellijCmd` therefore treats that stderr as a failure.
 10. **`zellij attach S options --on-force-close detach`** sets this client's
     force-close behavior, so killing/hanging-up a client scry owns detaches rather than
     quitting the session regardless of user config.

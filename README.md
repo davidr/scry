@@ -139,8 +139,11 @@ windows (verified after the fact).
   keypress sent to the newly attached client. It must be a sequence zellij consumes as a net
   no-op under *your* keybindings; the default is right for zellij's stock keybindings (lock
   then unlock). For a tmux-style config with prefix Ctrl-a, use `"\x01\x1b"` (Ctrl-a, then
-  Esc). In YAML use a double-quoted string so `\x` escapes work. **Warning:** a wrong value
-  is typed into the pane.
+  Esc) or `"\x01."` (Ctrl-a, then `.`, if `.` returns to normal mode). In YAML use a
+  double-quoted string so `\x` escapes work. **Warning:** any key zellij doesn't consume is
+  typed into the pane the new client first lands on, which can be a pane someone is using
+  in another terminal. With the default under a config that leaves Ctrl-g unbound, zsh's
+  emacs mode discards the line they are typing.
 
 Remaining caveats: directing the attaching client relies on zellij's undocumented "most
 recently active client" routing; zellij 0.45.1 reuses client IDs, so in rare races the
