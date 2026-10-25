@@ -1,8 +1,11 @@
 """Tests for display functions: get_column_width() and format_window_strings()."""
 
+import io
 from unittest.mock import patch
 
-from scry.scry import format_window_strings, get_column_width
+from rich.console import Console
+
+from scry.scry import format_window_strings, get_column_width, setup_display
 
 # --- get_column_width() ---
 
@@ -118,3 +121,66 @@ def test_no_collapse_when_hide_prefixes_disabled(prefix_windows, scry_config, cl
     result = format_window_strings(40, prefix_windows, 5)
     # "proj+02" at index 1 would normally collapse, but the feature is off
     assert "proj" in result[1]
+
+
+# --- literal rendering ---
+
+
+def _render(strings):
+    """Render markup strings through a real Console and return the plain text."""
+    buf = io.StringIO()
+    console = Console(file=buf, width=200, color_system=None)
+    for s in strings:
+        console.print(s, end="")
+    return buf.getvalue()
+
+
+def _named(name, wid="@1"):
+    return {"window_id": wid, "window_name": name, "window_active_clients": "0"}
+
+
+def test_bracket_name_renders_literally(scry_config, clean_window_history):
+    """A name like '[/]logs' must not raise MarkupError or be eaten."""
+    scry_config["fmt_overhead"] = 3
+    out = _render(format_window_strings(40, [_named("[/]logs")], 1))
+    assert "[/]logs" in out
+
+
+def test_markup_like_name_renders_literally(scry_config, clean_window_history):
+    """A name like '[bold]x' is shown verbatim."""
+    scry_config["fmt_overhead"] = 3
+    out = _render(format_window_strings(40, [_named("[bold]x")], 1))
+    assert "[bold]x" in out
+
+
+def test_control_chars_replaced(scry_config, clean_window_history):
+    """Newlines and ESC are replaced by '?'."""
+    scry_config["fmt_overhead"] = 3
+    out = _render(format_window_strings(60, [_named("a\nb\x1b[31mc")], 1))
+    assert "a?b?[31mc" in out
+    assert "\n" not in out
+    assert "\x1b" not in out
+
+
+def test_unicode_and_leading_dash_names(scry_config, clean_window_history):
+    """Ordinary unicode and dash-leading names are unchanged."""
+    scry_config["fmt_overhead"] = 3
+    out = _render(format_window_strings(40, [_named("-dash", "@1"), _named("日本語", "@2")], 2))
+    assert "-dash" in out
+    assert "日本語" in out
+
+
+def test_escaped_name_keeps_column_width(scry_config, clean_window_history):
+    """Escape backslashes must not change the padding."""
+    scry_config["fmt_overhead"] = 3
+    a, b = format_window_strings(30, [_named("[x]", "@1"), _named("abc", "@2")], 2)
+    assert len(_render([a])) == len(_render([b]))
+
+
+def test_error_message_with_brackets_renders():
+    """setup_display prints error text literally."""
+    buf = io.StringIO()
+    console = Console(file=buf, width=100, height=30, color_system=None)
+    with patch("scry.scry.sleep"):
+        setup_display(console, [], "bad [/] thing")
+    assert "Error: bad [/] thing" in buf.getvalue()

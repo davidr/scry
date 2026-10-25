@@ -35,6 +35,7 @@ from typing import Dict, List, Tuple
 
 import yaml
 from rich.console import Console
+from rich.markup import escape
 from rich.prompt import Prompt
 
 from scry.backends import get_backend
@@ -298,7 +299,7 @@ def setup_display(console: Console, windows: List[Dict[str, str]], error_message
     console.line(console.size.height - lines_printed - 2)
 
     if error_message:
-        console.print(f"Error: {error_message}")
+        console.print("Error: " + escape(display_text(error_message)))
         sleep(0.75)
     else:
         console.line()
@@ -501,6 +502,21 @@ def do_table_loop():
                 update_window_history(window_to_attach)
 
 
+def display_text(s: str) -> str:
+    """Make text safe to show on one terminal line.
+
+    Replaces every non-printable character (newlines, ESC, other controls) with '?'. The result is
+    NOT markup-escaped: callers elide and measure it first, then pass it through rich.markup.escape.
+
+    Args:
+        s: Text to sanitize.
+
+    Returns:
+        str: The text with each non-printable character replaced by '?'.
+    """
+    return "".join(ch if ch.isprintable() else "?" for ch in s)
+
+
 def format_window_name(window_name: str, maxlen: int) -> str:
     """Format the tmux window_name, removing middle chars if it is too long
 
@@ -647,7 +663,8 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]], item
             window_string += " "
 
         # Determine the display name, potentially collapsing common prefixes
-        display_name = window["window_name"]
+        raw_name = display_text(window["window_name"])
+        display_name = raw_name
         row = i % items_per_col
 
         # Check if this window is one of the 3 most recent (highlighted) windows
@@ -655,13 +672,13 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]], item
 
         # Only collapse if enabled, not at top of column, AND not highlighted
         if config["hide_prefixes"] and row != 0 and not is_highlighted:
-            match = suffix_pattern.match(window["window_name"])
+            match = suffix_pattern.match(raw_name)
             if match:
                 prefix, suffix = match.groups()
 
                 # Check if previous window (same column, one row up) has same prefix
                 prev_window = windows[i - 1]
-                prev_match = suffix_pattern.match(prev_window["window_name"])
+                prev_match = suffix_pattern.match(display_text(prev_window["window_name"]))
 
                 if prev_match and prev_match.group(1) == prefix:
                     # Replace prefix with spaces (prefix + '+' sign)
@@ -670,7 +687,7 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]], item
         # The name we use in the display may not be the actual window name, but instead may be
         # a shortened version, returned from format_window_name()
         window_fmt_name = format_window_name(display_name, column_width - fmt_overhead)
-        window_string += window_fmt_name
+        window_string += escape(window_fmt_name)
         _LOGGER.debug("pre-format window_string:  <<%s>>, len: %s", window_string, len(window_string))
 
         window_string += " " + "." * (column_width - len(window_fmt_name) - fmt_overhead) + " "
