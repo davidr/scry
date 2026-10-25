@@ -12,6 +12,7 @@ An interactive terminal-multiplexer window manager (tmux by default, zellij opti
 - Session group management
 - History-based window switching
 - Visual indicators for active and recently used windows
+- Remote zellij tabs over ssh, listed and attached alongside local windows
 - Configurable display parameters
 - Window list dump and load functionality
 
@@ -84,6 +85,7 @@ hide_prefixes: false
 backend: tmux    # multiplexer backend: "tmux" (default) or "zellij"
 zellij_wake_keys: "\x07\x07"   # zellij only; see "Zellij backend" below
 zellij_bin: ~/bin/zellij       # zellij only, optional; see below
+remotes: []                    # remote zellij tabs; see "Remote zellij tabs" below
 ```
 
 `zellij_bin` is optional: an explicit path to the zellij binary (`~` is expanded), used
@@ -155,7 +157,108 @@ recently active client" routing; zellij 0.45.1 reuses client IDs, so in rare rac
 attaching client may not be directed (it then shows whichever tab zellij picks).
 
 Live tests against a real zellij (throwaway `scry-test-*` sessions, stock keybindings):
-`SCRY_LIVE_ZELLIJ=1 uv run pytest -m live`.
+`SCRY_LIVE_ZELLIJ=1 uv run pytest -m live` (the remote live tests also need `ssh localhost` to work
+without a prompt).
+
+### Remote zellij tabs
+
+scry can list and attach to zellij tabs on other machines (for example Coder workspaces), next to
+your local windows. Each configured remote gets its own section in the index, labelled `<key><n>`:
+
+```
+── b · dev workspace ─────────────── 2m ago
+b0) build ...........  b2) editor ..........
+b1) logs ............
+```
+
+- `b2` attaches over ssh to the third entry in remote `b`'s name-sorted list (not zellij tab ID 2). Remote tabs can't be renamed, created, dumped or loaded.
+- `z` refreshes every remote (one ssh per host, `BatchMode`, bounded by `remote_timeout`) and blocks
+  until each host answers or times out. Redraws never touch the network: the index always shows the
+  last refresh, kept in a cache file per host. scry only opens ssh on `z` or on a remote attach.
+- `#` and tab names are as of the last `z`. Attach is tied to the list you last saw: if the remote
+  session restarted or the tab is gone, scry says so and asks for `z`.
+- Header on the right of each section: the age of the last good refresh; `unavailable` (the last
+  refresh failed, rows shown dim from the last known list); `no session running — start it, then
+  press z` (the host answered but has no zellij session); `never refreshed — press z`.
+- If an attach hangs, press Ctrl-C while it is connecting, or type `~.` to drop the ssh connection.
+  (With `remote_ctrl_c_guard: true` a stray Ctrl-C can't kill scry itself while the attach runs.)
+  scry restores your terminal afterwards.
+- A remote `key` that is also a command letter (`s q z u d l n r`) is allowed; the key still works
+  because selections always end in a digit. scry logs a warning (visible with `--debug`).
+
+Local `~/.scry.yml`:
+
+```yaml
+remotes:
+  - key: b                  # a single ASCII letter
+    host: coder.dev         # passed to ssh; may not start with "-"
+    label: dev workspace    # optional, defaults to host
+    scry: ~/.local/bin/scry # optional, "scry" or a path starting with / or ~/
+remote_cache_dir: ~/.cache/scry/remotes   # optional; default is $XDG_CACHE_HOME/scry/remotes
+remote_timeout: 10          # seconds per host for a whole refresh
+remote_ctrl_c_guard: true
+```
+
+`zellij_bin` (see Configuration) is also read on the remote.
+
+#### Setup checklist
+
+1. `uv tool install` scry on each remote (`make install`).
+2. Remote `~/.scry.yml` with `backend: zellij`, `session_group`, and `zellij_wake_keys` that are a
+   no-op under that host's keybindings. Non-interactive ssh may not have the directory holding zellij
+   on `PATH` (for example `~/bin`); if so, add `zellij_bin: ~/bin/zellij` there.
+3. Local `~/.scry.yml` `remotes:` entries; set `scry:` (absolute or `~/…`) if `ssh <host> scry` doesn't
+   find it.
+4. Run `ssh <host>` once by hand so host keys and authentication are settled (refresh uses
+   `BatchMode` and won't prompt).
+5. Recommended: ssh connection sharing for the remote hosts, in a block **outside** the Coder-managed
+   `coder config-ssh` section:
+   ```
+   Host coder.*
+       ControlMaster auto
+       ControlPath ~/.ssh/cm/%C
+       ControlPersist 10m
+       ServerAliveInterval 30
+   ```
+   (`mkdir -p ~/.ssh/cm && chmod 700 ~/.ssh/cm`.) This skips the `coder ssh` ProxyCommand on reused
+   connections, making `z` and attach much faster. The master is a background ssh process you chose to
+   configure; scry itself never starts connections on its own (a refresh that times out may leave the
+   master it started running; that is harmless). After a workspace stops, a dead master can make the
+   next connection hang or fail ("host unavailable"); `ssh -O check <host>` shows it, and
+   `ssh -O exit <host>` clears it.
+6. Check that the remote knows the local terminal's `TERM` (terminfo); if a terminal emulator's `TERM`
+   is unknown remotely, zellij may render badly.
+7. Verify with the exact non-interactive command scry will run:
+   `ssh -T -o BatchMode=yes <host> <scry> remote-list --proto=1` should print framed JSON.
+
+#### Messages
+
+Shown at scry's prompt (`b` is the remote's key):
+
+| Message | Meaning |
+|---|---|
+| `host b unavailable, or the connection was closed` | ssh exited 255: the host is unreachable, or the connection was closed (ssh exits 255 for both, and when the remote command is killed by a signal) |
+| ``scry not found on host b; set `scry:` in remotes`` | ssh couldn't run `scry` there; set the `scry:` path |
+| `scry on host b is too old for remote mode` | the remote scry has no remote subcommands |
+| `scry on host b is incompatible — upgrade it` | protocol version mismatch |
+| `scry on host b isn't set up for remote mode (needs backend: zellij and zellij_wake_keys in its ~/.scry.yml)` | the remote config is missing, unreadable, invalid, or not zellij |
+| `no zellij session running on host b` | start the session on the remote, then press `z` |
+| `host b's tab list is stale — press z` | the remote session restarted since the last `z` |
+| `that tab is gone on host b — press z` | the tab was closed since the last `z` |
+| `couldn't identify the zellij session on host b` | the remote session's identity couldn't be read (Linux `/proc`) |
+| `connection to host b cancelled` | you pressed Ctrl-C while connecting |
+| `remote command on host b failed (exit N)` | anything else |
+
+#### Known limitations
+
+- Remote zellij needs >= 0.45.1 and Linux on the remote (session identity uses `/proc`).
+- zellij can't target a client: a keystroke in another client of the same remote session at the exact
+  moment scry steers its new client can misroute it (rare for one user at one keyboard).
+- If steering fails (including zellij client-ID reuse), you land on whichever tab the client opened on,
+  after a blank hold of up to 2 s.
+- If the remote session exits in the instant between scry's check and `zellij attach`, zellij resurrects it.
+- A hung zellij command during steering can stall scry when you detach.
+- No remote rename, create, `d` or `l`; no background or automatic refresh.
 
 ## Development
 
@@ -188,9 +291,11 @@ The project uses Ruff for formatting, linting, and import sorting:
 - `src/scry/`
   - `__main__.py`: Entry point
   - `scry.py`: Core functionality
+  - `config_file.py`: shared `~/.scry.yml` reader
+  - `remote/`: remote zellij tabs. Remote end (`server.py`, `identity.py`) answers `scry remote-list` / `remote-attach`; local end (`config.py`, `cache.py`, `refresh.py`, `attach.py`, `messages.py`, `protocol.py`)
   - `backends/`: multiplexer backends (`base.py` interface, `tmux.py`, `zellij.py`, `pty_client.py`)
   - `bin_utils.py`: Binary path utilities
-- `tests/`: Test suite (189 tests)
+- `tests/`: Test suite (358 tests)
 - `pyproject.toml`: Project metadata and dependencies for `uv`.
 - `README.md`: This file.
 
