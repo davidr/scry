@@ -295,8 +295,9 @@ class ZellijBackend(MuxBackend):
             if not line.strip() or "EXITED" in line:
                 continue
             name = line.split()[0]
-            # zellij has no session groups or a per-session attached count we
-            # can query remotely; group mirrors the name, attached is unknown.
+            # zellij has no session groups, so group mirrors the name. The
+            # attached count could come from `-s NAME action list-clients`, but
+            # nothing needs it and it costs a call per session; report "0".
             sessions.append(
                 {
                     "session_id": name,
