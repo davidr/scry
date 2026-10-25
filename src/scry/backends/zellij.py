@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 """zellij backend: subprocess command wrapper and the ZellijBackend implementation."""
 
+import fcntl
 import json
 import logging
+import os
+import re
 import shutil
 import subprocess
 import threading
@@ -50,7 +53,69 @@ _HELPER_ROWS, _HELPER_COLS = 24, 80
 zellij's 0x0 tab (zellij-org/zellij#5594)
 """
 
+_ATTACH_LOCK_TIMEOUT = 5.0
+""" float: seconds to wait for another scry's attach steering before proceeding anyway
+"""
+
+_ATTACH_LOCK_POLL = 0.05
+""" float: seconds between attempts to take the attach lock
+"""
+
 _LOGGER = logging.getLogger(__name__)
+
+
+def _attach_lock_path(session_group: str) -> str:
+    """Return the path of the attach lock file for a session.
+
+    Args:
+        session_group: The zellij session.
+
+    Returns:
+        A file under $XDG_RUNTIME_DIR (or /tmp) named for the sanitized session.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", session_group)
+    return os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"scry-attach-{safe}.lock")
+
+
+def _acquire_attach_lock(session_group: str, timeout: float = _ATTACH_LOCK_TIMEOUT) -> Optional[int]:
+    """Take the per-session attach flock, waiting up to timeout seconds.
+
+    Args:
+        session_group: The zellij session.
+        timeout: Seconds to wait for the lock.
+
+    Returns:
+        The locked file descriptor, or None if the lock file could not be
+        opened or stayed busy (a warning is logged and the caller proceeds
+        without it).
+    """
+    path = _attach_lock_path(session_group)
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as e:
+        _LOGGER.warning("cannot open attach lock %s (%s); attaching without it", path, e)
+        return None
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                _LOGGER.warning("attach lock for %s busy after %.0fs; attaching without it", session_group, timeout)
+                return None
+            time.sleep(_ATTACH_LOCK_POLL)
+
+
+def _release_attach_lock(fd: Optional[int]) -> None:
+    """Unlock and close a descriptor from _acquire_attach_lock; no-op for None."""
+    if fd is None:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def _map_client_tabs(tabs: List[Dict]) -> Dict[str, int]:
@@ -406,19 +471,28 @@ class ZellijBackend(MuxBackend):
         before = _map_client_tabs(tabs)
         known = set(clients) | set(before)
         size = shutil.get_terminal_size()
-        client = PtyClient(
-            [self._bin, "attach", session_group, "options", "--on-force-close", "detach"],
-            size.lines,
-            size.columns,
-        )
-        gate = threading.Event()
-        director = threading.Thread(
-            target=self._direct_client,
-            args=(session_group, tab_id, client, known, before, gate),
-            name="zellij-direct-client",
-            daemon=True,
-        )
-        director.start()
+        # Held only while steering; once started, the director releases it.
+        lock_fd = _acquire_attach_lock(session_group)
+        director_started = False
+        try:
+            client = PtyClient(
+                [self._bin, "attach", session_group, "options", "--on-force-close", "detach"],
+                size.lines,
+                size.columns,
+            )
+            gate = threading.Event()
+            director = threading.Thread(
+                target=self._direct_client,
+                args=(session_group, tab_id, client, known, before, gate),
+                kwargs={"lock_fd": lock_fd},
+                name="zellij-direct-client",
+                daemon=True,
+            )
+            director.start()
+            director_started = True
+        finally:
+            if not director_started:
+                _release_attach_lock(lock_fd)
         try:
             proxy(client, gate, hold_timeout, stdin_fd, stdout_fd)
         finally:
@@ -434,6 +508,7 @@ class ZellijBackend(MuxBackend):
         known: Set[str],
         before: Dict[str, int],
         gate: threading.Event,
+        lock_fd: Optional[int] = None,
     ) -> None:
         """Move the newly attached client (and no other) to tab_id; always set gate.
 
@@ -455,6 +530,7 @@ class ZellijBackend(MuxBackend):
             known: Client IDs attached before the new client.
             before: Each pre-existing client's tab_id before the attach.
             gate: Set on return, releasing proxy's held terminal data.
+            lock_fd: The attach lock to release after gate is set, if held.
         """
         try:
             new_id = self._wait_for_new_client(session_group, known, alive=client.is_alive)
@@ -478,6 +554,7 @@ class ZellijBackend(MuxBackend):
             _LOGGER.warning("failed directing zellij client to tab %s", tab_id, exc_info=True)
         finally:
             gate.set()
+            _release_attach_lock(lock_fd)
 
     def _confirm_direction(self, session_group: str, tab_id: int, new_id: str, before: Dict[str, int]) -> bool:
         """Poll for the outcome of one go-to-tab-by-id aimed at the new client.

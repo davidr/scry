@@ -1,12 +1,20 @@
 """Tests for the zellij backend."""
 
 import json
+import logging
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from scry.backends.zellij import ZellijBackend, ZellijCmd
+from scry.backends.zellij import (
+    ZellijBackend,
+    ZellijCmd,
+    _acquire_attach_lock,
+    _attach_lock_path,
+    _release_attach_lock,
+)
 
 
 @pytest.fixture
@@ -593,3 +601,115 @@ def test_direct_client_stops_on_zellij_error(backend):
     client = MagicMock()
     gate, _ = _direct(backend, client, RuntimeError("session gone"))
     assert gate.is_set()
+
+
+# --- attach lock ---
+
+
+def test_attach_lock_path_uses_runtime_dir_and_sanitizes(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    assert _attach_lock_path("a/b") == str(tmp_path / "scry-attach-a_b.lock")
+    monkeypatch.delenv("XDG_RUNTIME_DIR")
+    assert _attach_lock_path("a/b").startswith("/tmp/")
+
+
+@patch("scry.backends.zellij.proxy")
+@patch("scry.backends.zellij.PtyClient")
+@patch("scry.backends.zellij.subprocess.run")
+def test_attach_takes_lock_before_spawning_client(mock_run, mock_pty, mock_proxy, backend):
+    mock_run.return_value = _completed(stdout=_tabs_json((0, "x", [1]), (5, "y", [])))
+    manager = MagicMock()
+    manager.acquire.return_value = 42
+    manager.pty.return_value = mock_pty.return_value
+    with (
+        patch.object(backend, "_list_clients", return_value=["1"]),
+        patch.object(backend, "_direct_client") as mock_direct,
+        patch("scry.backends.zellij._acquire_attach_lock", manager.acquire),
+        patch("scry.backends.zellij.PtyClient", manager.pty),
+    ):
+        backend.attach_window("5", "main")
+    names = [c[0] for c in manager.mock_calls]
+    assert names.index("acquire") < names.index("pty")
+    assert mock_direct.call_args.kwargs["lock_fd"] == 42
+
+
+def test_direct_client_releases_lock_when_done(backend, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    # success path
+    fd = _acquire_attach_lock("main")
+    assert fd is not None
+    gate = threading.Event()
+    with (
+        patch.object(backend, "_wait_for_new_client", return_value="3"),
+        patch.object(backend, "_client_tabs", side_effect=[{"3": 5}]),
+        patch("scry.backends.zellij.subprocess.run", return_value=_completed()),
+        patch("scry.backends.zellij.time.sleep"),
+    ):
+        backend._direct_client("main", 5, MagicMock(), {"1"}, {}, gate, lock_fd=fd)
+    assert gate.is_set()
+    fd2 = _acquire_attach_lock("main", timeout=0.1)
+    assert fd2 is not None
+    _release_attach_lock(fd2)
+    # error path
+    fd = _acquire_attach_lock("main")
+    gate = threading.Event()
+    with (
+        patch.object(backend, "_wait_for_new_client", return_value="3"),
+        patch.object(backend, "_action", side_effect=RuntimeError("boom")),
+        patch("scry.backends.zellij.time.sleep"),
+    ):
+        backend._direct_client("main", 5, MagicMock(), {"1"}, {}, gate, lock_fd=fd)
+    assert gate.is_set()
+    fd2 = _acquire_attach_lock("main", timeout=0.1)
+    assert fd2 is not None
+    _release_attach_lock(fd2)
+
+
+def test_second_attach_waits_for_lock(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    fd = _acquire_attach_lock("main")
+    result = {}
+
+    def second():
+        start = time.monotonic()
+        result["fd"] = _acquire_attach_lock("main", timeout=2.0)
+        result["elapsed"] = time.monotonic() - start
+
+    thread = threading.Thread(target=second)
+    thread.start()
+    time.sleep(0.2)
+    _release_attach_lock(fd)
+    thread.join()
+    assert isinstance(result["fd"], int)
+    assert result["elapsed"] >= 0.2
+    _release_attach_lock(result["fd"])
+
+
+def test_busy_lock_times_out_with_warning(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    fd = _acquire_attach_lock("main")
+    with caplog.at_level(logging.WARNING, logger="scry.backends.zellij"):
+        assert _acquire_attach_lock("main", timeout=0.2) is None
+    assert any(r.levelno == logging.WARNING and "busy" in r.getMessage() for r in caplog.records)
+    _release_attach_lock(fd)
+
+
+@patch("scry.backends.zellij.proxy")
+@patch("scry.backends.zellij.PtyClient", side_effect=OSError("no pty"))
+@patch("scry.backends.zellij.subprocess.run")
+def test_attach_releases_lock_if_spawn_fails(mock_run, mock_pty, mock_proxy, backend, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    mock_run.return_value = _completed(stdout=_tabs_json((0, "x", [1]), (5, "y", [])))
+    with patch.object(backend, "_list_clients", return_value=["1"]):
+        with pytest.raises(OSError):
+            backend.attach_window("5", "main")
+    fd = _acquire_attach_lock("main", timeout=0.1)
+    assert fd is not None
+    _release_attach_lock(fd)
+
+
+def test_acquire_attach_lock_unopenable_returns_none(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "missing"))
+    with caplog.at_level(logging.WARNING):
+        assert _acquire_attach_lock("main") is None
+    assert any(r.levelno == logging.WARNING and "attach lock" in r.getMessage() for r in caplog.records)
