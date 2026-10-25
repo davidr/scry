@@ -25,21 +25,27 @@ Todo:
 
 import argparse
 import logging
+import math
 import os
 import re
 import sys
 from collections import deque
 from shutil import get_terminal_size
-from time import sleep
-from typing import Dict, List, Tuple
+from time import sleep, time
+from typing import Dict, List, Optional, Tuple, Union
 
 import yaml
 from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Prompt
+from rich.text import Text
 
 from scry.backends import get_backend
 from scry.config_file import read_config_file
+from scry.remote.attach import attach_remote
+from scry.remote.cache import RemoteSection, RemoteTabRef, load_sections
+from scry.remote.config import validate_remote_settings
+from scry.remote.refresh import refresh_remotes
 
 # Default configuration values
 default_config = {
@@ -54,6 +60,10 @@ default_config = {
     "backend": "tmux",  # Terminal multiplexer backend: "tmux" or "zellij"
     "zellij_wake_keys": "\x07\x07",  # No-op key presses that make a new zellij client the action target
     "zellij_bin": None,  # Explicit path to the zellij binary; None means look it up in PATH
+    "remotes": None,  # List of remote hosts ({key, host, label?, scry?}); validated into RemoteConfig objects
+    "remote_cache_dir": None,  # Cache directory for remote tab lists; None means the XDG default
+    "remote_timeout": 10,  # Seconds allowed per host for a whole remote refresh
+    "remote_ctrl_c_guard": True,  # Guard against a stray Ctrl-C killing a remote attach
 }
 
 OPTION_HELP = {
@@ -188,20 +198,21 @@ config = parse_args_and_configure()
 
 # Instantiate the configured multiplexer backend (module-level, like config)
 try:
+    validate_remote_settings(config)
     backend = get_backend(config)
 except ValueError as e:
     _LOGGER.error("%s", e)
     sys.exit(1)
 
 
-def update_window_history(window_to_attach: str) -> None:
+def update_window_history(window_to_attach: Union[str, RemoteTabRef]) -> None:
     """Update the window history with a new window to attach.
 
     This function manages the window history deque, ensuring proper ordering and
     preventing duplicates when a new window is about to be attached.
 
     Args:
-        window_to_attach: The window ID that is about to be attached.
+        window_to_attach: The window ID (or remote tab reference) that is about to be attached.
     """
     if len(WINDOW_HISTORY) == 0:
         WINDOW_HISTORY.append(window_to_attach)
@@ -282,17 +293,23 @@ def process_rename_window_command(command: str, windows: List[Dict[str, str]], s
     return None, ""
 
 
-def setup_display(console: Console, windows: List[Dict[str, str]], error_message: str) -> None:
+def setup_display(
+    console: Console,
+    windows: List[Dict[str, str]],
+    error_message: str,
+    sections: Optional[List[RemoteSection]] = None,
+) -> None:
     """Set up the display for the tmux window list.
 
     Args:
         console: The Rich console object to write to.
         windows: List of window information dictionaries.
         error_message: Error message to display, if any.
+        sections: Remote sections to draw below the local windows, if any.
     """
     console.clear()
-    lines_printed = draw_table_windows(console, windows)
-    console.line(console.size.height - lines_printed - 2)
+    lines_printed = draw_table_windows(console, windows, sections)
+    console.line(max(0, console.size.height - lines_printed - 2))
 
     if error_message:
         console.print("Error: " + escape(display_text(error_message)))
@@ -321,9 +338,31 @@ def ensure_session_group_exists(session_group: str) -> bool:
     return True
 
 
+def history_entry_present(
+    entry: Union[str, RemoteTabRef], windows: List[Dict[str, str]], sections: List[RemoteSection]
+) -> bool:
+    """Check whether a history entry still refers to a listed window.
+
+    Args:
+        entry: A local window ID or a remote tab reference.
+        windows: The current local windows.
+        sections: The current remote sections.
+
+    Returns:
+        bool: True if a local window (or, for a RemoteTabRef, a remote row) matches the entry.
+    """
+    if isinstance(entry, RemoteTabRef):
+        return any(row["window_id"] == entry for section in sections for row in section.rows)
+    return any(window["window_id"] == entry for window in windows)
+
+
 def process_command(
-    command: str, windows: List[Dict[str, str]], session_group: str, console: Console
-) -> Tuple[str, str]:
+    command: str,
+    windows: List[Dict[str, str]],
+    session_group: str,
+    console: Console,
+    sections: Optional[List[RemoteSection]] = None,
+) -> Tuple[Union[str, RemoteTabRef, None], str]:
     """Process a user command and determine the appropriate action.
 
     Args:
@@ -331,9 +370,10 @@ def process_command(
         windows: List of current windows.
         session_group: The session group being managed.
         console: The Rich console object for displaying help information.
+        sections: The remote sections that were drawn; ``<key><n>`` selects from this snapshot.
 
     Returns:
-        Tuple[str, str]: A tuple containing (window_to_attach, error_message).
+        Tuple[Union[str, RemoteTabRef, None], str]: A tuple containing (window_to_attach, error_message).
             If there's no window to attach, window_to_attach will be None.
     """
     # Handle empty command
@@ -347,6 +387,17 @@ def process_command(
         except IndexError:
             return None, "Invalid index"
 
+    # Handle remote tab selection (<key><n>) from the drawn snapshot
+    match = re.fullmatch(r"([A-Za-z])(\d+)", command)
+    if match:
+        key, index = match.group(1), int(match.group(2))
+        for section in sections or []:
+            if section.remote.key == key:
+                if index < len(section.rows):
+                    return section.rows[index]["window_id"], ""
+                break
+        return None, "Invalid index"
+
     # Handle new window command
     if command.startswith("n "):
         return process_new_window_command(command, session_group)
@@ -359,7 +410,13 @@ def process_command(
     commands = {
         "s": lambda: (WINDOW_HISTORY[-2], "") if len(WINDOW_HISTORY) > 1 else (None, ""),
         "q": lambda: sys.exit(0),
-        "?": lambda: show_help(console),
+        "?": lambda: show_help(console, bool(config["remotes"])),
+        "z": lambda: (
+            None,
+            refresh_remotes(
+                config["remotes"], config["remote_cache_dir"], config["remote_timeout"], config["remote_ctrl_c_guard"]
+            ),
+        ),
         "u": lambda: (None, ""),
         "d": lambda: (None, dump_windows_to_yaml(windows, config["dump_file"]) or "Window list dumped to YAML."),
         "l": lambda: (None, load_windows_from_yaml(config["dump_file"], session_group) or "Windows loaded from YAML."),
@@ -371,17 +428,22 @@ def process_command(
     return None, f'command "{command}" not recognized'
 
 
-def show_help(console: Console) -> Tuple[str, str]:
+def show_help(console: Console, remotes_configured: bool = False) -> Tuple[str, str]:
     """Display help information.
 
     Args:
         console: The Rich console object for displaying help.
+        remotes_configured: Whether remote hosts are configured; adds the remote commands and escapes.
 
     Returns:
         Tuple[str, str]: Always returns (None, "") to match process_command return type.
     """
     for cmd, help_string in OPTION_HELP.items():
         console.print(f"\t\t{cmd}\t{help_string}")
+    if remotes_configured:
+        console.print("\t\t<key><n>\tAttach remote tab (e.g. b2); # is as of the last z")
+        console.print("\t\tz\tRefresh remote tabs (blocks until each host answers or times out)")
+        console.print("\t\tRemote attach stuck? Ctrl-C while connecting, or type ~. to drop the ssh connection")
     console.line(2)
     _ = console.input("[Enter to continue]")
     return None, ""
@@ -465,31 +527,38 @@ def do_table_loop():
         windows = backend.list_windows(config["session_group"])
         _LOGGER.info("windows: %s", windows)
 
-        # Ensure session group exists if we have no windows
+        # Ensure session group exists if we have no windows. We `continue` even though the group is
+        # now created: the next iteration lists the new session and draws the remote sections.
         if len(windows) == 0 and not ensure_session_group_exists(config["session_group"]):
             display_error_message = "Did not find session group, attempted to create it"
             continue
 
+        # Remote sections come from the local cache only; a redraw never touches the network
+        sections = load_sections(config["remotes"], config["remote_cache_dir"])
+
         # Clean up history if needed
-        if len(WINDOW_HISTORY) > 0:
-            previous_window = WINDOW_HISTORY[-1]
-            if not next(
-                (window for window in windows if window["window_id"] == previous_window),
-                None,
-            ):
-                WINDOW_HISTORY.pop()
+        if len(WINDOW_HISTORY) > 0 and not history_entry_present(WINDOW_HISTORY[-1], windows, sections):
+            WINDOW_HISTORY.pop()
 
         # Display current state
-        setup_display(console, windows, display_error_message)
+        setup_display(console, windows, display_error_message, sections)
         display_error_message = ""
 
         # Get and process command
-        short_options = "/".join(OPTION_HELP.keys())
-        command = Prompt.ask(f"Attach [bold magenta]\[{short_options}][/]")
+        short_options = prompt_hint(len(windows), sections)
+        command = Prompt.ask(rf"Attach [bold magenta]\[{short_options}][/]")
 
-        window_to_attach, display_error_message = process_command(command, windows, config["session_group"], console)
+        window_to_attach, display_error_message = process_command(
+            command, windows, config["session_group"], console, sections
+        )
 
-        if window_to_attach:
+        if isinstance(window_to_attach, RemoteTabRef):
+            display_error_message = attach_remote(
+                window_to_attach, config["remotes"], config["remote_ctrl_c_guard"], console
+            )
+            if not display_error_message:
+                update_window_history(window_to_attach)
+        elif window_to_attach:
             try:
                 backend.attach_window(window_to_attach, config["session_group"])
             except RuntimeError as e:
@@ -553,32 +622,85 @@ def validate_window_name(s: str) -> bool:
     return False
 
 
-def draw_table_windows(console: Console, windows: List[Dict[str, str]]) -> int:
-    """Draw a formatted table of tmux sessions to the console.
+def format_age(seconds: float) -> str:
+    """Format an age in seconds as a short relative time.
 
     Args:
-        console: Rich Console object to write the table to.
-        windows: List of dictionaries containing tmux window information.
-            Each dictionary should contain 'window_id' and 'window_name' keys.
+        seconds: The age in seconds.
 
     Returns:
-        int: Number of lines printed to the console.
+        str: ``"<1m ago"``, ``"5m ago"``, ``"3h ago"`` or ``"2d ago"``.
     """
-    lines_printed = 0
+    if seconds < 60:
+        return "<1m ago"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return f"{int(seconds // 86400)}d ago"
 
-    console.clear()
-    console.rule(f"[bold]scry {len(windows)}")
-    console.line()
-    lines_printed += 2
 
+def section_header(section: RemoteSection, width: int, now: float) -> Text:
+    """Build the header line of a remote section.
+
+    The label is host-controlled text, so it is returned as plain ``Text`` (no markup parsing).
+
+    Args:
+        section: The remote section.
+        width: Width to fill the line to with ``─``.
+        now: The current time, in seconds since the epoch.
+
+    Returns:
+        Text: The header line; dim when the section's state is ``"failed"``.
+    """
+    left = f"── {section.remote.key} · {display_text(section.remote.label)} "
+
+    last = section.last_success
+    # The cache file may have been hand-edited: treat non-finite times as never succeeded, and
+    # clamp times in the future to an age of zero.
+    age = format_age(max(0.0, now - last)) if last is not None and math.isfinite(last) else None
+
+    if section.state == "ok" and age is not None:
+        right = age
+    elif section.state == "failed":
+        right = "unavailable" if age is None else f"unavailable · {age}"
+    elif section.state == "no_session":
+        right = "no session running — start it, then press z"
+    else:
+        right = "never refreshed — press z"
+
+    fill = max(1, width - len(left) - len(right) - 1)
+    header = Text(f"{left}{'─' * fill} {right}", style="dim" if section.state == "failed" else "", no_wrap=True)
+    # Never wider than the console, so the header is always exactly one line
+    header.truncate(width, overflow="ellipsis")
+    return header
+
+
+def draw_rows(
+    console: Console,
+    windows: List[Dict[str, str]],
+    labels: Optional[List[str]] = None,
+    dim: bool = False,
+) -> int:
+    """Print windows in the multi-column layout.
+
+    Args:
+        console: Rich Console object to write to.
+        windows: Window dictionaries with 'window_id', 'window_name' and 'window_active_clients' keys.
+        labels: Index labels to show instead of the row numbers.
+        dim: Whether to dim the rows.
+
+    Returns:
+        int: Number of lines printed.
+    """
     if len(windows) == 0:
-        return lines_printed
+        return 0
 
     n_cols, column_width = get_column_width()
     items_per_col = (len(windows) + n_cols - 1) // n_cols
     _LOGGER.info("n_cols: %s, column_width: %s, items_per_col: %s", n_cols, column_width, items_per_col)
 
-    window_strings = format_window_strings(column_width, windows, items_per_col)
+    window_strings = format_window_strings(column_width, windows, items_per_col, labels, dim)
 
     for i in range(items_per_col):
         for j in range(n_cols):
@@ -593,12 +715,84 @@ def draw_table_windows(console: Console, windows: List[Dict[str, str]]) -> int:
 
         # print the newline since we're at the end of a row
         console.print("")
-        lines_printed += 1
+
+    return items_per_col
+
+
+def draw_remote_section(console: Console, section: RemoteSection) -> int:
+    """Draw one remote section: a blank line, its header, then its rows.
+
+    Args:
+        console: Rich Console object to write to.
+        section: The remote section.
+
+    Returns:
+        int: Number of lines printed.
+    """
+    console.line()
+    console.print(section_header(section, console.size.width, time()))
+    labels = [f"{section.remote.key}{n}" for n in range(len(section.rows))]
+    return 2 + draw_rows(console, section.rows, labels, dim=section.state == "failed")
+
+
+def prompt_hint(n_local: int, sections: List[RemoteSection]) -> str:
+    """Build the option hint shown in the prompt.
+
+    Args:
+        n_local: Number of local windows.
+        sections: Remote sections (one per configured remote); those with rows contribute a
+            ``<key>0-<key><n-1>`` range, and any section at all means ``z`` is available.
+
+    Returns:
+        str: The hint, e.g. ``"0-7/b0-b3/n/r/s/u/d/l/z/q/?"``.
+    """
+    parts = ["##" if n_local == 0 else f"0-{n_local - 1}"]
+    for section in sections:
+        if section.rows:
+            key = section.remote.key
+            parts.append(f"{key}0-{key}{len(section.rows) - 1}")
+    parts.extend(["n", "r", "s", "u", "d", "l"])
+    if sections:
+        parts.append("z")
+    parts.extend(["q", "?"])
+    return "/".join(parts)
+
+
+def draw_table_windows(
+    console: Console, windows: List[Dict[str, str]], sections: Optional[List[RemoteSection]] = None
+) -> int:
+    """Draw a formatted table of tmux sessions to the console.
+
+    Args:
+        console: Rich Console object to write the table to.
+        windows: List of dictionaries containing tmux window information.
+            Each dictionary should contain 'window_id' and 'window_name' keys.
+        sections: Remote sections to draw below the local windows, if any.
+
+    Returns:
+        int: Number of lines printed to the console.
+    """
+    lines_printed = 0
+
+    console.clear()
+    console.rule(f"[bold]scry {len(windows)}")
+    console.line()
+    lines_printed += 2
+
+    lines_printed += draw_rows(console, windows)
+    for section in sections or []:
+        lines_printed += draw_remote_section(console, section)
 
     return lines_printed
 
 
-def format_window_strings(column_width: int, windows: List[Dict[str, str]], items_per_col: int) -> List[str]:
+def format_window_strings(
+    column_width: int,
+    windows: List[Dict[str, str]],
+    items_per_col: int,
+    labels: Optional[List[str]] = None,
+    dim: bool = False,
+) -> List[str]:
     """Format tmux windows into display strings with proper formatting and highlighting.
 
     Args:
@@ -606,6 +800,8 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]], item
         windows: List of dictionaries containing tmux window information.
             Each dictionary should contain 'window_id', 'window_name', and 'window_active_clients' keys.
         items_per_col: Number of items per column in the display layout.
+        labels: Index labels (right-justified) to show instead of the row numbers.
+        dim: Whether to prefix each string with ``[dim]``.
 
     Returns:
         List[str]: List of formatted strings, each representing a window with proper
@@ -625,7 +821,9 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]], item
         # srsly?
         raise RuntimeError(f"you have {n_windows} windows, which is too many")
 
-    if n_windows > 100:
+    if labels:
+        idx_len = max(len(label) for label in labels)
+    elif n_windows > 100:
         idx_len = 3
     elif n_windows > 10:
         idx_len = 2
@@ -636,22 +834,24 @@ def format_window_strings(column_width: int, windows: List[Dict[str, str]], item
     fmt_overhead += idx_len
 
     for i, window in enumerate(windows):
-        window_string = ""
+        dim_prefix = "[dim]" if dim else ""
+        window_string = dim_prefix
 
         if len(WINDOW_HISTORY) > 0:
             # We have at least one window in our history, the most recent. Highlight it
             if window["window_id"] == WINDOW_HISTORY[-1]:
-                window_string = "[bold reverse magenta]"
+                window_string = dim_prefix + "[bold reverse magenta]"
 
         if len(WINDOW_HISTORY) > 1:
             if window["window_id"] == WINDOW_HISTORY[-2]:
-                window_string = "[bold italic green]"
+                window_string = dim_prefix + "[bold italic green]"
 
         if len(WINDOW_HISTORY) > 2:
             if window["window_id"] == WINDOW_HISTORY[-3]:
-                window_string = "[bold italic blue]"
+                window_string = dim_prefix + "[bold italic blue]"
 
-        window_string += f"[b]{i:>{idx_len}d})[/b]"
+        index_label = labels[i] if labels else str(i)
+        window_string += f"[b]{index_label:>{idx_len}})[/b]"
         # If the window is attached anywhere, we want to put a hash in the list next to the name
         if window["window_active_clients"] != "0":
             window_string += "[bold italic]#"

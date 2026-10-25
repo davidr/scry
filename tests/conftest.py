@@ -102,3 +102,29 @@ def mock_console():
     console = create_autospec(Console, instance=True)
     console.size = type("Size", (), {"width": 120, "height": 40})()
     return console
+
+
+@pytest.fixture
+def remote_sections():
+    """Factory: write a cache file for host b.example (key b) and return (remotes, cache_dir, sections)."""
+    from scry.remote.cache import load_sections, write_cache
+    from scry.remote.config import RemoteConfig
+
+    def make(tmp_path, tabs=None):
+        cache_dir = str(tmp_path)
+        write_cache(
+            cache_dir,
+            "b.example",
+            {
+                "identity": "1:2",
+                "last_success": 100.0,
+                "last_attempt": {"status": "ok"},
+                "tabs": tabs
+                if tabs is not None
+                else [{"id": 7, "name": "aa", "clients": 0}, {"id": 9, "name": "bb", "clients": 1}],
+            },
+        )
+        remotes = [RemoteConfig(key="b", label="beta", host="b.example")]
+        return remotes, cache_dir, load_sections(remotes, cache_dir)
+
+    return make

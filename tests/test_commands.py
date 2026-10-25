@@ -199,3 +199,74 @@ def test_create_fails(mock_list, mock_create):
     mock_list.return_value = []
     result = ensure_session_group_exists("main")
     assert result is False
+
+
+# --- remote selection: <key><n> and z ---
+
+
+def test_remote_index_resolves(mock_windows, clean_window_history, remote_sections, tmp_path):
+    """'b1' returns the second row's RemoteTabRef."""
+    from scry.remote.cache import RemoteTabRef
+
+    _, _, sections = remote_sections(tmp_path)
+    result, err = process_command("b1", mock_windows, "main", MagicMock(), sections)
+    assert result == RemoteTabRef("b.example", "1:2", "9")
+    assert err == ""
+
+
+def test_remote_bare_key_not_a_selection(mock_windows, clean_window_history, remote_sections, tmp_path):
+    """A bare key letter is not a selection."""
+    _, _, sections = remote_sections(tmp_path)
+    result, err = process_command("b", mock_windows, "main", MagicMock(), sections)
+    assert result is None
+    assert err == 'command "b" not recognized'
+
+
+def test_remote_unknown_key_or_range(mock_windows, clean_window_history, remote_sections, tmp_path):
+    """Unknown key or out-of-range index is invalid."""
+    _, _, sections = remote_sections(tmp_path)
+    for cmd in ("x0", "b9"):
+        result, err = process_command(cmd, mock_windows, "main", MagicMock(), sections)
+        assert result is None
+        assert err == "Invalid index"
+
+
+def test_remote_key_without_sections(mock_windows, clean_window_history):
+    """With no sections, 'b0' is an invalid index."""
+    result, err = process_command("b0", mock_windows, "main", MagicMock())
+    assert (result, err) == (None, "Invalid index")
+
+
+def test_z_calls_refresh_with_config(mock_windows, clean_window_history):
+    """'z' passes the config values to refresh_remotes and returns its message."""
+    from scry.scry import config
+
+    settings = {"remotes": ["R"], "remote_cache_dir": "/c", "remote_timeout": 3, "remote_ctrl_c_guard": True}
+    with (
+        patch.dict(config, settings),
+        patch("scry.scry.refresh_remotes", return_value="oops") as refresh,
+    ):
+        result, err = process_command("z", mock_windows, "main", MagicMock())
+    refresh.assert_called_once_with(["R"], "/c", 3, True)
+    assert (result, err) == (None, "oops")
+
+
+def test_selection_uses_drawn_snapshot(mock_windows, clean_window_history, remote_sections, tmp_path):
+    """A cache rewrite after drawing does not change what 'b0' selects."""
+    from scry.remote.cache import RemoteTabRef
+
+    _, _, sections = remote_sections(tmp_path)
+    remote_sections(tmp_path, tabs=[{"id": 42, "name": "new", "clients": 0}])
+    result, _ = process_command("b0", mock_windows, "main", MagicMock(), sections)
+    assert result == RemoteTabRef("b.example", "1:2", "7")
+
+
+def test_enter_and_swap_return_remote_entries(mock_windows, clean_window_history):
+    """Enter and 's' return RemoteTabRef history entries."""
+    from scry.remote.cache import RemoteTabRef
+
+    ref = RemoteTabRef("h", "1:2", "3")
+    clean_window_history.extend([ref, "@1"])
+    assert process_command("s", mock_windows, "main", MagicMock()) == (ref, "")
+    clean_window_history.extend([ref])
+    assert process_command("", mock_windows, "main", MagicMock()) == (ref, "")
