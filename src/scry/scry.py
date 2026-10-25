@@ -39,6 +39,7 @@ from rich.markup import escape
 from rich.prompt import Prompt
 
 from scry.backends import get_backend
+from scry.config_file import read_config_file
 
 # Default configuration values
 default_config = {
@@ -89,12 +90,7 @@ def parse_args_and_configure() -> Dict:
     cfg = default_config.copy()
 
     # Load configuration from file
-    config_file_path = os.path.join(os.path.expanduser("~"), ".scry.yml")
-    if os.path.exists(config_file_path):
-        with open(config_file_path, "r", encoding="utf-8") as f:
-            file_config = yaml.safe_load(f)
-            if file_config:
-                cfg.update(file_config)
+    cfg.update(read_config_file())
 
     # Load configuration from command-line arguments
     parser = argparse.ArgumentParser(description="Interactive terminal-multiplexer window manager (tmux or zellij).")

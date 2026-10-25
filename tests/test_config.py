@@ -48,8 +48,7 @@ def test_config_file_loading(tmp_path):
     config_file.write_text("minnamelen: 30\nsession_group: devgroup\n")
     with (
         patch.object(sys, "argv", ["scry"]),
-        patch("scry.scry.os.path.join", return_value=str(config_file)),
-        patch("scry.scry.os.path.exists", return_value=True),
+        patch.dict("os.environ", {"HOME": str(tmp_path)}),
     ):
         cfg = parse_args_and_configure()
     assert cfg["minnamelen"] == 30
@@ -62,8 +61,7 @@ def test_cli_overrides_file(tmp_path):
     config_file.write_text("minnamelen: 30\n")
     with (
         patch.object(sys, "argv", ["scry", "--minnamelen", "50"]),
-        patch("scry.scry.os.path.join", return_value=str(config_file)),
-        patch("scry.scry.os.path.exists", return_value=True),
+        patch.dict("os.environ", {"HOME": str(tmp_path)}),
     ):
         cfg = parse_args_and_configure()
     assert cfg["minnamelen"] == 50
