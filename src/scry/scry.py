@@ -51,6 +51,7 @@ default_config = {
     "hide_prefixes": False,  # Collapse shared "prefix+NN" prefixes in the display
     "backend": "tmux",  # Terminal multiplexer backend: "tmux" or "zellij"
     "zellij_wake_keys": "\x07\x07",  # No-op key presses that make a new zellij client the action target
+    "zellij_bin": None,  # Explicit path to the zellij binary; None means look it up in PATH
 }
 
 OPTION_HELP = {

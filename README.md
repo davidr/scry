@@ -83,7 +83,12 @@ dump_file: "~/.scry_windows.yml"
 hide_prefixes: false
 backend: tmux    # multiplexer backend: "tmux" (default) or "zellij"
 zellij_wake_keys: "\x07\x07"   # zellij only; see "Zellij backend" below
+zellij_bin: ~/bin/zellij       # zellij only, optional; see below
 ```
+
+`zellij_bin` is optional: an explicit path to the zellij binary (`~` is expanded), used
+instead of searching `PATH`. It is for when zellij isn't on `PATH`, e.g. under
+non-interactive ssh. scry exits with an error if it isn't an executable file.
 
 When `hide_prefixes` is enabled, a window named like `proj+02` that sits directly
 below another `proj+NN` window in the same column has its shared prefix blanked

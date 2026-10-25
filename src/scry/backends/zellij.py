@@ -211,13 +211,24 @@ class ZellijBackend(MuxBackend):
     Creating tabs uses new-tab --no-focus, which moves no client.
     """
 
-    def __init__(self, wake_keys: str = DEFAULT_WAKE_KEYS):
+    def __init__(self, wake_keys: str = DEFAULT_WAKE_KEYS, zellij_bin: Optional[str] = None):
         """
         Args:
             wake_keys: Key presses zellij consumes as a net no-op under the
                 user's keybindings; each character is written as one key press.
+            zellij_bin: Optional path to the zellij binary (``~`` is expanded),
+                used instead of a PATH lookup.
+
+        Raises:
+            ValueError: If zellij_bin is set but is not an executable file.
         """
-        self._bin = find_bin_in_path("zellij")
+        if zellij_bin:
+            path = os.path.expanduser(zellij_bin)
+            if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+                raise ValueError(f"zellij_bin {zellij_bin!r} is not an executable file")
+            self._bin = path
+        else:
+            self._bin = find_bin_in_path("zellij")
         self._headless_depth = 0
         self._helper: Optional[PtyClient] = None
         self._wake_keys = wake_keys

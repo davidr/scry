@@ -74,3 +74,11 @@ def test_config_zellij_wake_keys_default():
         with patch("scry.scry.os.path.exists", return_value=False):
             cfg = parse_args_and_configure()
     assert cfg["zellij_wake_keys"] == "\x07\x07"
+
+
+def test_get_backend_passes_zellij_bin(tmp_path):
+    exe = tmp_path / "zellij"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    backend = get_backend({"backend": "zellij", "zellij_bin": str(exe)})
+    assert backend._bin == str(exe)

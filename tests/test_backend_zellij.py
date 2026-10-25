@@ -708,6 +708,38 @@ def test_attach_releases_lock_if_spawn_fails(mock_run, mock_pty, mock_proxy, bac
     _release_attach_lock(fd)
 
 
+# --- zellij_bin override ---
+
+
+def _make_exe(path):
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_zellij_bin_overrides_path_lookup(tmp_path):
+    exe = _make_exe(tmp_path / "zellij")
+    with patch("scry.backends.zellij.find_bin_in_path") as find:
+        backend = ZellijBackend(zellij_bin=str(exe))
+    find.assert_not_called()
+    assert backend._bin == str(exe)
+
+
+def test_zellij_bin_tilde_expanded(tmp_path, monkeypatch):
+    exe = _make_exe(tmp_path / "z")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with patch("scry.backends.zellij.find_bin_in_path") as find:
+        backend = ZellijBackend(zellij_bin="~/z")
+    find.assert_not_called()
+    assert backend._bin == str(exe)
+
+
+def test_zellij_bin_missing_raises_value_error(tmp_path):
+    missing = tmp_path / "nope"
+    with pytest.raises(ValueError, match="is not an executable file"):
+        ZellijBackend(zellij_bin=str(missing))
+
+
 def test_acquire_attach_lock_unopenable_returns_none(monkeypatch, tmp_path, caplog):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "missing"))
     with caplog.at_level(logging.WARNING):
